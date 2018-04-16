@@ -18,40 +18,47 @@ import (
 	"github.com/aws/aws-sdk-go/service/sqs"
 )
 
-func TestRetryHandler(t *testing.T) {
-	endpoint := os.Getenv("ELASTICMQ_URL")
-	c := sqs.New(session.New(&aws.Config{
-		Endpoint:    aws.String(endpoint),
-		Region:      aws.String("local"),
-		Credentials: credentials.NewStaticCredentials("id", "secret", "token"),
-	}))
+func TestRouterIntegration(t *testing.T) {
+	c := newClient()
 
-	// Create a new queue
-	jobQueueName := "jobs"
-	queueURL := createQueue(t, c, jobQueueName)
+	// Create a new queue.
+	queueURL := createQueue(t, c, "jobs")
 
-	// Send a message
+	// Send a message.
 	sendMessage(t, c, queueURL, aws.String("worker.1"), aws.String("do some work"))
 
 	done := make(chan struct{})
 
-	// Init handler
+	// Init handler.
 	r := mq.NewRouter()
 
-	// Route certain messages to a specific handler
+	// Route certain messages to a specific handler.
 	r.Handle("worker.1", mq.HandlerFunc(func(c sqsiface.SQSAPI, m *mq.Message) error {
 		assert.Equal(t, "do some work", *m.SQSMessage.Body)
+
+		// Mark message as processed.
+		err := mq.DeleteMessage(c, m)
+		assert.NoError(t, err)
+
 		close(done)
 		return nil
 	}))
 
-	// h := mq.RetryHandler(r)
-
+	// Run server until message is received.
 	s := mq.NewServer(*queueURL, r, mq.WithClient(c))
 	s.Start()
 	defer s.Shutdown(context.Background())
 
 	<-done
+}
+
+func newClient() sqsiface.SQSAPI {
+	endpoint := os.Getenv("ELASTICMQ_URL")
+	return sqs.New(session.New(&aws.Config{
+		Endpoint:    aws.String(endpoint),
+		Region:      aws.String("local"),
+		Credentials: credentials.NewStaticCredentials("id", "secret", "token"),
+	}))
 }
 
 func createQueue(t *testing.T, c sqsiface.SQSAPI, name string) *string {
