@@ -12,7 +12,12 @@ import (
 	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
 )
 
-const DefaultConcurrency = 1
+const (
+	DefaultConcurrency         = 1
+	DefaultMaxNumberOfMessages = 10
+	DefaultWaitTimeSeconds     = 20
+	DefaultVisibilityTimeout   = 30
+)
 
 type Server struct {
 	QueueURL     string
@@ -48,9 +53,9 @@ func ServerDefaults(s *Server) {
 	s.MessageAttributeNames = []*string{
 		aws.String(sqs.QueueAttributeNameAll),
 	}
-	s.MaxNumberOfMessages = aws.Int64(10)
-	s.WaitTimeSeconds = aws.Int64(20)
-	s.VisibilityTimeout = aws.Int64(30)
+	s.MaxNumberOfMessages = aws.Int64(DefaultMaxNumberOfMessages)
+	s.WaitTimeSeconds = aws.Int64(DefaultWaitTimeSeconds)
+	s.VisibilityTimeout = aws.Int64(DefaultVisibilityTimeout)
 }
 
 func NewServer(opts ...func(*Server)) *Server {
