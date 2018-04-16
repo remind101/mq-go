@@ -1,0 +1,12 @@
+version: '2'
+
+services:
+  mq:
+    build: .
+    command: make test
+    volumes:
+      - .:/go/src/github.com/remind101/mq-go # mount source directory
+    depends_on:
+      - sqs
+  sqs:
+    image: s12v/elasticmq:0.13.8
