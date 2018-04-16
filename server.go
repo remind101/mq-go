@@ -15,7 +15,7 @@ import (
 const (
 	DefaultConcurrency         = 1
 	DefaultMaxNumberOfMessages = 10
-	DefaultWaitTimeSeconds     = 20
+	DefaultWaitTimeSeconds     = 1
 	DefaultVisibilityTimeout   = 30
 )
 
@@ -36,13 +36,10 @@ type Server struct {
 	done     chan struct{}
 }
 
+// ServerDefaults is used by NewServer to initialize a Server with defaults.
 func ServerDefaults(s *Server) {
 	s.Client = sqs.New(session.New())
 	s.Concurrency = DefaultConcurrency
-	s.Handler = HandlerFunc(func(c sqsiface.SQSAPI, m *Message) error {
-		fmt.Printf("%+v\n", m)
-		return nil
-	})
 	s.ErrorHandler = func(err error) {
 		fmt.Fprintln(os.Stderr, err.Error())
 	}
@@ -58,8 +55,19 @@ func ServerDefaults(s *Server) {
 	s.VisibilityTimeout = aws.Int64(DefaultVisibilityTimeout)
 }
 
-func NewServer(opts ...func(*Server)) *Server {
+// WithClient configures a Server with a custom sqs Client.
+func WithClient(c sqsiface.SQSAPI) func(s *Server) {
+	return func(s *Server) {
+		s.Client = c
+	}
+}
+
+// NewServer creates a new Server.
+func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 	s := &Server{
+		QueueURL: queueURL,
+		Handler:  h,
+
 		shutdown: make(chan struct{}),
 		done:     make(chan struct{}),
 	}

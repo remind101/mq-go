@@ -30,7 +30,7 @@ func TestRouter(t *testing.T) {
 	err = r.HandleMessage(&mockSQSClient{}, &mq.Message{
 		SQSMessage: &sqs.Message{
 			MessageAttributes: map[string]*sqs.MessageAttributeValue{
-				"route": &sqs.MessageAttributeValue{
+				mq.MessageAttributeNameRoute: &sqs.MessageAttributeValue{
 					StringValue: aws.String("bar"),
 				},
 			},
@@ -43,7 +43,7 @@ func TestRouter(t *testing.T) {
 	err = r.HandleMessage(&mockSQSClient{}, &mq.Message{
 		SQSMessage: &sqs.Message{
 			MessageAttributes: map[string]*sqs.MessageAttributeValue{
-				"route": &sqs.MessageAttributeValue{
+				mq.MessageAttributeNameRoute: &sqs.MessageAttributeValue{
 					StringValue: aws.String("foo"),
 				},
 			},

@@ -1,9 +1,11 @@
 version: '2'
 
 services:
-  mq:
+  test:
     build: .
-    command: make test
+    command: make integration
+    environment:
+      ELASTICMQ_URL: http://sqs:9324
     volumes:
       - .:/go/src/github.com/remind101/mq-go # mount source directory
     depends_on:

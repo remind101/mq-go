@@ -8,6 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
 )
 
+const MessageAttributeNameRoute = "route"
+
 // Router will route a message based on MessageAttributes to other registered Handlers.
 type Router struct {
 	sync.Mutex
@@ -24,7 +26,7 @@ func NewRouter() *Router {
 	return &Router{
 		Resolver: func(m *Message) (string, bool) {
 			r := ""
-			v, ok := m.SQSMessage.MessageAttributes["route"]
+			v, ok := m.SQSMessage.MessageAttributes[MessageAttributeNameRoute]
 			if ok {
 				r = *v.StringValue
 			}
