@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-
-	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
 )
 
 const MessageAttributeNameRoute = "route"
@@ -43,14 +41,14 @@ func (r *Router) Handle(route string, h Handler) {
 	r.handlers[route] = h
 }
 
-func (r *Router) HandleMessage(c sqsiface.SQSAPI, m *Message) error {
+func (r *Router) HandleMessage(m *Message) error {
 	key, ok := r.Resolver(m)
 	if !ok {
 		return errors.New("no routing key for message")
 	}
 
 	if h, ok := r.handlers[key]; ok {
-		return h.HandleMessage(c, m)
+		return h.HandleMessage(m)
 	}
 
 	return fmt.Errorf("no handler matched for routing key: %s", key)

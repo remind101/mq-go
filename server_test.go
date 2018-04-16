@@ -6,7 +6,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sqs"
-	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
 	mq "github.com/remind101/mq-go"
 	"github.com/stretchr/testify/assert"
 )
@@ -14,9 +13,9 @@ import (
 func TestServer(t *testing.T) {
 	done := make(chan struct{})
 	qURL := "jobs"
-	c := &memSQSClient{}
+	c := NewMemSQSClient()
 
-	h := mq.HandlerFunc(func(c sqsiface.SQSAPI, m *mq.Message) error {
+	h := mq.HandlerFunc(func(m *mq.Message) error {
 		assert.Equal(t, `{"name":"test"}`, *m.SQSMessage.Body)
 		close(done)
 		return nil

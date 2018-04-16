@@ -100,10 +100,12 @@ func (c *Server) Start() {
 				} else {
 					for _, message := range out.Messages {
 						m := &Message{
-							ctx:        context.Background(),
 							QueueURL:   c.QueueURL,
 							SQSMessage: message,
 							Retryer:    DefaultRetrier,
+
+							client: c.Client,
+							ctx:    context.Background(),
 						}
 						messagesCh <- m // this will block if Subscribers are not ready to receive
 					}
@@ -148,9 +150,26 @@ func (c *Server) startWorker(messages <-chan *Message, wg *sync.WaitGroup) {
 }
 
 func (c *Server) processMessages(messages <-chan *Message) {
+	h := RootHandler(c.Handler)
+
 	for m := range messages {
-		if err := c.Handler.HandleMessage(c.Client, m); err != nil {
+		if err := h.HandleMessage(m); err != nil {
 			c.ErrorHandler(err)
 		}
 	}
+}
+
+// RootHandler will retry a message by extending its visibility timeout if any error occurs.
+// Queues MUST have a dead letter queue for this to work properly.
+func RootHandler(h Handler) Handler {
+	return HandlerFunc(func(m *Message) error {
+		// Process message.
+		if err := h.HandleMessage(m); err != nil {
+			// Processing failed. Add a delay to the message before retrying.
+			return DelayVisibility(m)
+		}
+
+		// Processing successful, delete message
+		return m.Delete()
+	})
 }
