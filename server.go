@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
 )
 
-const DefaultConcurrency = 10
+const DefaultConcurrency = 1
 
 type Server struct {
 	QueueURL     string

@@ -11,20 +11,19 @@ import (
 	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
 )
 
-// Features:
-// Tracing (message attributes or headers key in message payload)
-// Different retry strategies per queue or message type?
-
+// A Handler processes a Message.
 type Handler interface {
 	HandleMessage(sqsiface.SQSAPI, *Message) error
 }
 
+// HandlerFunc is an adaptor to allow the use of ordinary functions as message Handlers.
 type HandlerFunc func(sqsiface.SQSAPI, *Message) error
 
 func (h HandlerFunc) HandleMessage(c sqsiface.SQSAPI, m *Message) error {
 	return h(c, m)
 }
 
+// Message wraps an sqs.Message.
 type Message struct {
 	QueueURL   string
 	SQSMessage *sqs.Message
@@ -37,15 +36,15 @@ func (m *Message) Context() context.Context {
 	return m.ctx
 }
 
-// Mux
+// Mux will route a message based on MessageAttributes to other registered Handlers.
 type Mux struct {
-	RouteParser func(*Message) string
-	handlers    map[string]Handler
+	Resolver func(*Message) string
+	handlers map[string]Handler
 }
 
 func NewMux() *Mux {
 	return &Mux{
-		RouteParser: func(m *Message) string {
+		Resolver: func(m *Message) string {
 			r := ""
 			if v, ok := m.SQSMessage.MessageAttributes["route"]; ok && v.DataType == aws.String("String") {
 				r = *v.StringValue
@@ -60,7 +59,7 @@ func (m *Mux) Handle(route string, h Handler) {
 }
 
 func (mux *Mux) HandleMessage(c sqsiface.SQSAPI, m *Message) error {
-	r := mux.RouteParser(m)
+	r := mux.Resolver(m)
 	if h, ok := mux.handlers[r]; ok {
 		return h.HandleMessage(c, m)
 	}
