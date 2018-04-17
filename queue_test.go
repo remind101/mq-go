@@ -18,6 +18,7 @@ type memSQSClient struct {
 
 type message struct {
 	message      *sqs.Message
+	receivedTime time.Time
 	visibleAfter time.Time
 }
 
@@ -75,11 +76,33 @@ func (c *memSQSClient) ReceiveMessage(params *sqs.ReceiveMessageInput) (*sqs.Rec
 
 		for _, m := range q {
 			if m.visibleAfter.Unix() <= now.Unix() {
+				if m.receivedTime.IsZero() {
+					m.receivedTime = now
+				}
 				data.Messages = append(data.Messages, m.message)
-				m.visibleAfter = now.Add(vt)
+				m.visibleAfter = m.receivedTime.Add(vt)
 			}
 			if len(data.Messages) >= max {
 				return data, nil
+			}
+		}
+	}
+
+	return data, nil
+}
+
+func (c *memSQSClient) ChangeMessageVisibility(params *sqs.ChangeMessageVisibilityInput) (*sqs.ChangeMessageVisibilityOutput, error) {
+	c.Lock()
+	defer c.Unlock()
+	data := &sqs.ChangeMessageVisibilityOutput{}
+
+	vt := time.Duration(*params.VisibilityTimeout) * time.Second
+
+	if q, ok := c.queues[*params.QueueUrl]; ok {
+		for _, m := range q {
+			if *m.message.ReceiptHandle == *params.ReceiptHandle {
+				m.visibleAfter = m.receivedTime.Add(vt)
+				break
 			}
 		}
 	}
