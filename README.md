@@ -1,6 +1,21 @@
 # MQ - A package for consuming SQS message queues
 
-package mq is modeled after the net/http Handler interface.
+The goal of this project is to provide tooling to utilize SQS effectively in Go.
+
+## Features
+
+* Familiar `net/http` Handler interface.
+* Retry with expontial backoff via visibility timeouts and dead letter queues.
+* Router Handler for multiplexing messages over a single queue.
+* Server with configurable concurrency and graceful shutdown.
+
+Composable Handler Middleware
+
+* Opentracing
+* Metrics
+* Error reporting
+* Logging
+* Panic recovering
 
 ## QuickStart
 

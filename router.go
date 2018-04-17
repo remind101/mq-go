@@ -8,6 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 )
 
+// MessageAttributeNameRoute is a MessageAttribute name used as a routing key by
+// the Router.
 const MessageAttributeNameRoute = "route"
 
 // Router will route a message based on MessageAttributes to other registered Handlers.
@@ -22,6 +24,7 @@ type Router struct {
 	handlers map[string]Handler
 }
 
+// NewRouter returns a new Router.
 func NewRouter() *Router {
 	return &Router{
 		Resolver: defaultResolver,

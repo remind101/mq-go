@@ -31,6 +31,7 @@ func TestRouter(t *testing.T) {
 			},
 		},
 	})
+
 	assert.Error(t, err)
 	assert.Equal(t, "no handler matched for routing key: bar", err.Error())
 

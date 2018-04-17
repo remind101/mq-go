@@ -14,12 +14,24 @@ import (
 )
 
 const (
-	DefaultConcurrency         = 1
+	// DefaultConcurrency is the default concurrency for the Server.
+	DefaultConcurrency = 1
+
+	// DefaultMaxNumberOfMessages is the default maximum number of messages the
+	// Server will request when receiving messages.
 	DefaultMaxNumberOfMessages = 10
-	DefaultWaitTimeSeconds     = 1
-	DefaultVisibilityTimeout   = 30
+
+	// DefaultWaitTimeSeconds is the default WaitTimeSeconds used when receiving
+	// messages.
+	DefaultWaitTimeSeconds = 1
+
+	// DefaultVisibilityTimeout is the default VisibilityTimeout used when
+	// receiving messages.
+	DefaultVisibilityTimeout = 30
 )
 
+// Server is responsible for running the request loop to receive SQS messages
+// from a single SQS Queue, and pass them to a Handler.
 type Server struct {
 	QueueURL     string
 	Client       sqsiface.SQSAPI
@@ -81,6 +93,8 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 	return s
 }
 
+// Start starts the request loop for receiving messages and a configurable
+// number of Handler routines for message processing.
 func (c *Server) Start() {
 	var wg sync.WaitGroup
 	messagesCh := make(chan *Message)
@@ -120,6 +134,7 @@ func (c *Server) Start() {
 	}
 }
 
+// Shutdown gracefully shuts down the Server.
 func (c *Server) Shutdown(ctx context.Context) error {
 	close(c.shutdown)
 
