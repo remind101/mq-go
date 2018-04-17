@@ -2,51 +2,28 @@ package mq
 
 import (
 	"math"
-	"strconv"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/sqs"
-	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
 )
 
-const MaxVisibilityTimeout = 43200
+// MaxVisibilityTimeout is the maximum allowed VisibilityTimeout by SQS.
+const MaxVisibilityTimeout = 43200 // 12 hours
 
-type Retryer interface {
-	RetryDelay(receiveCount int) int // Seconds
+type RetryPolicy interface {
+	// Amount to delay the message visibility in seconds from the time the
+	// message was first received, based on the number of times it has been
+	// received so far.
+	Delay(receiveCount int) *int64 // Seconds
 }
 
-type defaultRetryer struct{}
+type defaultRetryPolicy struct{}
 
-func (r *defaultRetryer) RetryDelay(receiveCount int) int {
-	return int(math.Min(math.Exp2(float64(receiveCount)), float64(MaxVisibilityTimeout)))
+func (r *defaultRetryPolicy) Delay(receiveCount int) *int64 {
+	exp2 := math.Exp2(float64(receiveCount))
+	min := math.Min(exp2, float64(MaxVisibilityTimeout))
+	return aws.Int64(int64(min))
 }
 
-var DefaultRetrier = &defaultRetryer{}
-
-// RetryHandler will retry a message by extending its visibility timout.
-// This handler should only be used with queues that have a dead letter queue.
-func RetryHandler(h Handler) Handler {
-	return HandlerFunc(func(c sqsiface.SQSAPI, m *Message) error {
-		// Process message
-		if err := h.HandleMessage(c, m); err != nil {
-			return DelayVisibility(c, m)
-		}
-
-		return DeleteMessage(c, m)
-	})
-}
-
-// DelayVisibility will extend the visibility of a message based on its receive count.
-func DelayVisibility(c sqsiface.SQSAPI, m *Message) error {
-	v := m.SQSMessage.Attributes[sqs.MessageSystemAttributeNameApproximateReceiveCount]
-	receiveCount, _ := strconv.Atoi(*v)
-
-	delay := m.Retryer.RetryDelay(receiveCount)
-	_, err := c.ChangeMessageVisibility(&sqs.ChangeMessageVisibilityInput{
-		QueueUrl:          aws.String(m.QueueURL),
-		ReceiptHandle:     m.SQSMessage.ReceiptHandle,
-		VisibilityTimeout: aws.Int64(int64(delay)),
-	})
-
-	return err
-}
+// DefaultRetryPolicy increases the Message VisibilityTimeout exponentially
+// based on the received count up to MaxVisibilityTimeout and MaxReceives
+var DefaultRetryPolicy = &defaultRetryPolicy{}

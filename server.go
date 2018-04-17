@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -100,10 +101,12 @@ func (c *Server) Start() {
 				} else {
 					for _, message := range out.Messages {
 						m := &Message{
-							ctx:        context.Background(),
-							QueueURL:   c.QueueURL,
-							SQSMessage: message,
-							Retryer:    DefaultRetrier,
+							QueueURL:    c.QueueURL,
+							SQSMessage:  message,
+							RetryPolicy: DefaultRetryPolicy,
+
+							client: c.Client,
+							ctx:    context.Background(),
 						}
 						messagesCh <- m // this will block if Subscribers are not ready to receive
 					}
@@ -149,8 +152,53 @@ func (c *Server) startWorker(messages <-chan *Message, wg *sync.WaitGroup) {
 
 func (c *Server) processMessages(messages <-chan *Message) {
 	for m := range messages {
-		if err := c.Handler.HandleMessage(c.Client, m); err != nil {
+		if err := c.Handler.HandleMessage(m); err != nil {
 			c.ErrorHandler(err)
 		}
 	}
+}
+
+// RootHandler is a root handler responsible for deleting messages from the
+// queue and handling errors.
+//
+// Queues MUST have a dead letter queue or else messages that cannot succeed
+// will never be removed from the queue.
+func RootHandler(h Handler) Handler {
+	return HandlerFunc(func(m *Message) error {
+		// Process message.
+		if err := h.HandleMessage(m); err != nil {
+			if e, ok := err.(delayable); ok {
+				return m.ChangeVisibility(e.Delay())
+			}
+			return ChangeVisibilityWithRetryPolicy(m)
+		}
+
+		// Processing successful, delete message
+		return m.Delete()
+	})
+}
+
+type delayable interface {
+	Delay() *int64 // Seconds
+}
+
+// ChangeVisibilityWithRetryPolicy will change the visibility of a message based
+// on the error of message retry policy.
+//
+// If the delay is equal to the zero, this is a no op.
+func ChangeVisibilityWithRetryPolicy(m *Message) error {
+	receiveCount := receiveCount(m)
+	delay := m.RetryPolicy.Delay(receiveCount)
+
+	if aws.Int64Value(delay) == 0 {
+		return nil
+	}
+
+	return m.ChangeVisibility(delay)
+}
+
+func receiveCount(m *Message) int {
+	v := m.SQSMessage.Attributes[sqs.MessageSystemAttributeNameApproximateReceiveCount]
+	receiveCount, _ := strconv.Atoi(aws.StringValue(v))
+	return receiveCount
 }

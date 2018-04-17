@@ -48,6 +48,12 @@
   version = "v1.35.0"
 
 [[projects]]
+  name = "github.com/google/uuid"
+  packages = ["."]
+  revision = "064e2069ce9c359c118179501254f67d7d37ba24"
+  version = "0.2"
+
+[[projects]]
   name = "github.com/jmespath/go-jmespath"
   packages = ["."]
   revision = "0b12d6b5"
@@ -70,6 +76,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "b0056234ed3459e6507a5d85af6e94839731fd0c55524d5a55968d00c037b603"
+  inputs-digest = "b837d5a0f60cb2cae79929ef2dde410bb8c078aa090ac4f7976a1700b62204b1"
   solver-name = "gps-cdcl"
   solver-version = 1
