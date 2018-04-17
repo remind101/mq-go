@@ -32,12 +32,12 @@ type Message struct {
 
 // Delete removes the message from the queue.
 func (m *Message) Delete() error {
-	return deleteMessage(m.client, m)
+	return deleteMessage(mustClient(m.client), m)
 }
 
 // ChangeVisibility changes the VisibilityTimeout to timeout seconds.
 func (m *Message) ChangeVisibility(timeout *int64) error {
-	return changeMessageVisibility(m.client, m, timeout)
+	return changeMessageVisibility(mustClient(m.client), m, timeout)
 }
 
 // Context returns the message context.
@@ -61,4 +61,11 @@ func changeMessageVisibility(c sqsiface.SQSAPI, m *Message, timeout *int64) erro
 	})
 
 	return err
+}
+
+func mustClient(c sqsiface.SQSAPI) sqsiface.SQSAPI {
+	if c == nil {
+		panic("client is nil")
+	}
+	return c
 }

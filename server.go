@@ -151,33 +151,26 @@ func (c *Server) startWorker(messages <-chan *Message, wg *sync.WaitGroup) {
 }
 
 func (c *Server) processMessages(messages <-chan *Message) {
-	h := RootHandler(c.Handler)
-
 	for m := range messages {
-		if err := h.HandleMessage(m); err != nil {
+		if err := c.Handler.HandleMessage(m); err != nil {
 			c.ErrorHandler(err)
 		}
 	}
 }
 
-// RootHandler is the root handler responsible for deleting messages from the queue and handling
-// errors.
+// RootHandler is a root handler responsible for deleting messages from the
+// queue and handling errors.
 //
-// Queues MUST have a dead letter queue or else messages that cannot succeed will never be removed from
-// the queue.
+// Queues MUST have a dead letter queue or else messages that cannot succeed
+// will never be removed from the queue.
 func RootHandler(h Handler) Handler {
 	return HandlerFunc(func(m *Message) error {
 		// Process message.
 		if err := h.HandleMessage(m); err != nil {
-			if m.RetryPolicy.Exhausted(receiveCount(m)) {
-				// Raise error, DeleteMessage or move to dead letter queue
-			} else if e, ok := err.(temporary); ok && !e.Temporary() {
-				// Raise error, DeleteMessage or move to dead letter queue
-			} else if e, ok := err.(delayable); ok {
+			if e, ok := err.(delayable); ok {
 				return m.ChangeVisibility(e.Delay())
-			} else {
-				return DelayVisibility(m)
 			}
+			return ChangeVisibilityWithRetryPolicy(m)
 		}
 
 		// Processing successful, delete message
@@ -185,18 +178,22 @@ func RootHandler(h Handler) Handler {
 	})
 }
 
-type temporary interface {
-	Temporary() bool
-}
-
 type delayable interface {
 	Delay() *int64 // Seconds
 }
 
-// DelayVisibility will extend the visibility of a message based on the error of message retry policy.
-func DelayVisibility(m *Message) error {
+// ChangeVisibilityWithRetryPolicy will change the visibility of a message based
+// on the error of message retry policy.
+//
+// If the delay is equal to the zero, this is a no op.
+func ChangeVisibilityWithRetryPolicy(m *Message) error {
 	receiveCount := receiveCount(m)
 	delay := m.RetryPolicy.Delay(receiveCount)
+
+	if aws.Int64Value(delay) == 0 {
+		return nil
+	}
+
 	return m.ChangeVisibility(delay)
 }
 

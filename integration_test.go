@@ -34,14 +34,14 @@ func TestRouterIntegration(t *testing.T) {
 
 	// Route certain messages to a specific handler.
 	r.Handle("worker.1", mq.HandlerFunc(func(c sqsiface.SQSAPI, m *mq.Message) error {
-		assert.Equal(t, "do some work", *m.SQSMessage.Body)
+		assert.Equal(t, "do some work", aws.StringValue(m.SQSMessage.Body))
 
 		// Mark message as processed.
 		err := mq.DeleteMessage(c, m)
 		assert.NoError(t, err)
 
 		close(done)
-		return nil
+		return m.Delete()
 	}))
 
 	// Run server until message is received.

@@ -24,18 +24,12 @@ type Router struct {
 
 func NewRouter() *Router {
 	return &Router{
-		Resolver: func(m *Message) (string, bool) {
-			r := ""
-			v, ok := m.SQSMessage.MessageAttributes[MessageAttributeNameRoute]
-			if ok {
-				r = aws.StringValue(v.StringValue)
-			}
-			return r, ok
-		},
+		Resolver: defaultResolver,
 		handlers: map[string]Handler{},
 	}
 }
 
+// Handle registers a Handler under a route key.
 func (r *Router) Handle(route string, h Handler) {
 	r.Lock()
 	defer r.Unlock()
@@ -43,6 +37,7 @@ func (r *Router) Handle(route string, h Handler) {
 	r.handlers[route] = h
 }
 
+// HandleMessage satisfies the Handler interface.
 func (r *Router) HandleMessage(m *Message) error {
 	key, ok := r.Resolver(m)
 	if !ok {
@@ -54,4 +49,13 @@ func (r *Router) HandleMessage(m *Message) error {
 	}
 
 	return fmt.Errorf("no handler matched for routing key: %s", key)
+}
+
+func defaultResolver(m *Message) (string, bool) {
+	r := ""
+	v, ok := m.SQSMessage.MessageAttributes[MessageAttributeNameRoute]
+	if ok {
+		r = aws.StringValue(v.StringValue)
+	}
+	return r, ok
 }
