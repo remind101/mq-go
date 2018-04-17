@@ -81,7 +81,7 @@ func (c *Client) ReceiveMessage(params *sqs.ReceiveMessageInput) (*sqs.ReceiveMe
 	}
 
 	for _, m := range q {
-		if m.visibleAfter.Unix() <= now.Unix() {
+		if m.visibleAfter.Before(now) {
 			if m.receivedTime.IsZero() {
 				m.receivedTime = now
 			}
