@@ -1,4 +1,6 @@
-# MQ - A package for consuming SQS message queues, modeled after the net/http Handler interface.
+# MQ - A package for consuming SQS message queues
+
+package mq is modeled after the net/http Handler interface.
 
 ## QuickStart
 
