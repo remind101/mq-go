@@ -173,6 +173,27 @@ func (c *Server) processMessages(messages <-chan *Message) {
 	}
 }
 
+// ServerGroup represents a list of Servers.
+type ServerGroup struct {
+	Servers []*Server
+}
+
+// Start starts all servers in the group.
+func (sg *ServerGroup) Start() {
+	for _, s := range sg.Servers {
+		s.Start()
+	}
+}
+
+// Shutdown gracefully shuts down all servers.
+func (sg *ServerGroup) Shutdown(ctx context.Context) <-chan error {
+	errCh := make(chan error, len(sg.Servers))
+	for _, s := range sg.Servers {
+		errCh <- s.Shutdown(ctx)
+	}
+	return errCh
+}
+
 // RootHandler is a root handler responsible for deleting messages from the
 // queue and handling errors.
 //
