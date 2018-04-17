@@ -41,11 +41,8 @@ func (c *memSQSClient) SendMessage(params *sqs.SendMessageInput) (*sqs.SendMessa
 		visibleAfter: time.Now(),
 	}
 
-	if params.DelaySeconds != nil {
-		msg.visibleAfter = msg.visibleAfter.Add(time.Duration(*params.DelaySeconds) * time.Second)
-	}
-
-	c.queues[*params.QueueUrl] = append(c.queues[*params.QueueUrl], msg)
+	msg.visibleAfter = msg.visibleAfter.Add(time.Duration(aws.Int64Value(params.DelaySeconds)) * time.Second)
+	c.queues[aws.StringValue(params.QueueUrl)] = append(c.queues[aws.StringValue(params.QueueUrl)], msg)
 
 	return &sqs.SendMessageOutput{}, nil
 }
@@ -62,8 +59,8 @@ func (c *memSQSClient) ReceiveMessage(params *sqs.ReceiveMessageInput) (*sqs.Rec
 		return data, nil
 	}
 
-	if q, ok := c.queues[*params.QueueUrl]; ok {
-		max := int(*params.MaxNumberOfMessages)
+	if q, ok := c.queues[aws.StringValue(params.QueueUrl)]; ok {
+		max := int(aws.Int64Value(params.MaxNumberOfMessages))
 		if len(q) < max {
 			max = len(q)
 		}
@@ -96,11 +93,11 @@ func (c *memSQSClient) ChangeMessageVisibility(params *sqs.ChangeMessageVisibili
 	defer c.Unlock()
 	data := &sqs.ChangeMessageVisibilityOutput{}
 
-	vt := time.Duration(*params.VisibilityTimeout) * time.Second
+	vt := time.Duration(aws.Int64Value(params.VisibilityTimeout)) * time.Second
 
-	if q, ok := c.queues[*params.QueueUrl]; ok {
+	if q, ok := c.queues[aws.StringValue(params.QueueUrl)]; ok {
 		for _, m := range q {
-			if *m.message.ReceiptHandle == *params.ReceiptHandle {
+			if aws.StringValue(m.message.ReceiptHandle) == aws.StringValue(params.ReceiptHandle) {
 				m.visibleAfter = m.receivedTime.Add(vt)
 				break
 			}
@@ -115,10 +112,10 @@ func (c *memSQSClient) DeleteMessage(params *sqs.DeleteMessageInput) (*sqs.Delet
 	defer c.Unlock()
 	data := &sqs.DeleteMessageOutput{}
 
-	if q, ok := c.queues[*params.QueueUrl]; ok {
+	if q, ok := c.queues[aws.StringValue(params.QueueUrl)]; ok {
 		for i, m := range q {
-			if *m.message.ReceiptHandle == *params.ReceiptHandle {
-				c.queues[*params.QueueUrl] = append(q[:i], q[i+1:]...)
+			if aws.StringValue(m.message.ReceiptHandle) == aws.StringValue(params.ReceiptHandle) {
+				c.queues[aws.StringValue(params.QueueUrl)] = append(q[:i], q[i+1:]...)
 				break
 			}
 		}
