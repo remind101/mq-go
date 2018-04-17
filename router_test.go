@@ -5,15 +5,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sqs"
-	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
 	"github.com/stretchr/testify/assert"
 
 	mq "github.com/remind101/mq-go"
 )
-
-type mockSQSClient struct {
-	sqsiface.SQSAPI
-}
 
 func TestRouter(t *testing.T) {
 	r := mq.NewRouter()

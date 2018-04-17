@@ -2,19 +2,33 @@ package mq
 
 import (
 	"math"
+
+	"github.com/aws/aws-sdk-go/aws"
 )
 
 const MaxVisibilityTimeout = 43200
+const MaxReceives = 15
 
-type Retryer interface {
-	RetryDelay(receiveCount int) int // Seconds
+type RetryPolicy interface {
+	Delay(receiveCount int) *int64 // Seconds
+	Exhausted(receiveCount int) bool
 }
 
-type defaultRetryer struct{}
+type defaultRetryPolicy struct{}
 
-func (r *defaultRetryer) RetryDelay(receiveCount int) int {
-	return int(math.Min(math.Exp2(float64(receiveCount)), float64(MaxVisibilityTimeout)))
+func (r *defaultRetryPolicy) Delay(receiveCount int) *int64 {
+	exp2 := math.Exp2(float64(receiveCount))
+	min := math.Min(exp2, float64(MaxVisibilityTimeout))
+	return aws.Int64(int64(min))
 }
 
-// DefaultRetrier increases the Message VisibilityTimeout exponentially based on the received count.
-var DefaultRetrier = &defaultRetryer{}
+func (r *defaultRetryPolicy) Exhausted(receivedCount int) bool {
+	if receivedCount >= MaxReceives {
+		return true
+	}
+	return false
+}
+
+// DefaultRetryPolicy increases the Message VisibilityTimeout exponentially
+// based on the received count up to MaxVisibilityTimeout and MaxReceives
+var DefaultRetryPolicy = &defaultRetryPolicy{}

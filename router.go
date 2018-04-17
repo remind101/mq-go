@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/aws/aws-sdk-go/aws"
 )
 
 const MessageAttributeNameRoute = "route"
@@ -26,7 +28,7 @@ func NewRouter() *Router {
 			r := ""
 			v, ok := m.SQSMessage.MessageAttributes[MessageAttributeNameRoute]
 			if ok {
-				r = *v.StringValue
+				r = aws.StringValue(v.StringValue)
 			}
 			return r, ok
 		},

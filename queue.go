@@ -2,7 +2,6 @@ package mq // import "github.com/remind101/mq-go"
 
 import (
 	"context"
-	"strconv"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sqs"
@@ -23,9 +22,9 @@ func (h HandlerFunc) HandleMessage(m *Message) error {
 
 // Message wraps an sqs.Message.
 type Message struct {
-	QueueURL   string
-	SQSMessage *sqs.Message
-	Retryer    Retryer
+	QueueURL    string
+	SQSMessage  *sqs.Message
+	RetryPolicy RetryPolicy
 
 	client sqsiface.SQSAPI
 	ctx    context.Context
@@ -44,15 +43,6 @@ func (m *Message) ChangeVisibility(timeout *int64) error {
 // Context returns the message context.
 func (m *Message) Context() context.Context {
 	return m.ctx
-}
-
-// DelayVisibility will extend the visibility of a message based on its retrier and receive count.
-func DelayVisibility(m *Message) error {
-	v := m.SQSMessage.Attributes[sqs.MessageSystemAttributeNameApproximateReceiveCount]
-	receiveCount, _ := strconv.Atoi(*v)
-
-	delay := m.Retryer.RetryDelay(receiveCount)
-	return m.ChangeVisibility(aws.Int64(int64(delay)))
 }
 
 func deleteMessage(c sqsiface.SQSAPI, m *Message) error {
