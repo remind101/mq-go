@@ -3,7 +3,7 @@ version: '2'
 services:
   test:
     build: .
-    command: make integration
+    command: make test-all
     environment:
       ELASTICMQ_URL: http://localstack:4576
     volumes:
