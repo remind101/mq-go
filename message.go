@@ -33,6 +33,18 @@ func (m *Message) Context() context.Context {
 	return m.ctx
 }
 
+// WithContext returns a shallow copy of the message its context changed to ctx.
+func (m *Message) WithContext(ctx context.Context) *Message {
+	if ctx == nil {
+		panic("nil context")
+	}
+	m2 := new(Message)
+	*m2 = *m
+	m2.ctx = ctx
+
+	return m2
+}
+
 func deleteMessage(c sqsiface.SQSAPI, m *Message) error {
 	_, err := c.DeleteMessage(&sqs.DeleteMessageInput{
 		QueueUrl:      aws.String(m.QueueURL),
