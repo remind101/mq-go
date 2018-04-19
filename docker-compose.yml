@@ -5,10 +5,16 @@ services:
     build: .
     command: make integration
     environment:
-      ELASTICMQ_URL: http://sqs:9324
+      ELASTICMQ_URL: http://localstack:4576
     volumes:
       - .:/go/src/github.com/remind101/mq-go # mount source directory
     depends_on:
-      - sqs
-  sqs:
-    image: s12v/elasticmq:0.13.8
+      - localstack
+  localstack:
+    image: localstack/localstack
+    ports:
+      - "4567-4583:4567-4583"
+      - "8080:8080"
+    environment:
+      - SERVICES=sqs
+      - DOCKER_HOST=unix:///var/run/docker.sock
