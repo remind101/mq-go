@@ -37,7 +37,7 @@ func TestRouterIntegration(t *testing.T) {
 		defer func() {
 			err = m.Delete()
 			assert.NoError(t, err)
-		}
+		}()
 		assert.Equal(t, "do some work", aws.StringValue(m.SQSMessage.Body))
 		close(done)
 		return
@@ -52,12 +52,11 @@ func TestRouterIntegration(t *testing.T) {
 }
 
 func newClient() sqsiface.SQSAPI {
-	endpoint := os.Getenv("ELASTICMQ_URL")
-	return sqs.New(session.New(&aws.Config{
-		Endpoint:    aws.String(endpoint),
-		Region:      aws.String("local"),
-		Credentials: credentials.NewStaticCredentials("id", "secret", "token"),
-	}))
+	config := aws.NewConfig()
+	config = config.WithEndpoint(os.Getenv("ELASTICMQ_URL"))
+	config = config.WithRegion("local")
+	config = config.WithCredentials(credentials.NewStaticCredentials("id", "secret", "token"))
+	return sqs.New(session.New(config))
 }
 
 func createQueue(t *testing.T, c sqsiface.SQSAPI, name string) *string {
