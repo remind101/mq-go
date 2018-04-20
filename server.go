@@ -114,14 +114,7 @@ func (c *Server) Start() {
 					c.ErrorHandler(err)
 				} else {
 					for _, message := range out.Messages {
-						m := &Message{
-							QueueURL:    c.QueueURL,
-							SQSMessage:  message,
-							RetryPolicy: DefaultRetryPolicy,
-
-							client: c.Client,
-							ctx:    context.Background(),
-						}
+						m := NewMessage(c.QueueURL, message, c.Client)
 						messagesCh <- m // this will block if Subscribers are not ready to receive
 					}
 				}

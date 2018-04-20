@@ -18,6 +18,16 @@ type Message struct {
 	ctx    context.Context
 }
 
+func NewMessage(queueURL string, sqsMessage *sqs.Message, client sqsiface.SQSAPI) *Message {
+	return &Message{
+		QueueURL:    queueURL,
+		SQSMessage:  sqsMessage,
+		RetryPolicy: DefaultRetryPolicy,
+		client:      client,
+		ctx:         context.Background(),
+	}
+}
+
 // Delete removes the message from the queue.
 func (m *Message) Delete() error {
 	return deleteMessage(mustClient(m.client), m)
