@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -112,6 +113,7 @@ func (c *Server) Start() {
 				out, err := c.receiveMessage()
 				if err != nil {
 					c.ErrorHandler(err)
+					time.Sleep(1 * time.Second)
 				} else {
 					for _, message := range out.Messages {
 						m := NewMessage(c.QueueURL, message, c.Client)
