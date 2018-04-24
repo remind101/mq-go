@@ -9,7 +9,7 @@ import (
 )
 
 var DefaultSpanName = "sqs.message"
-var DefaultTagger = func(span opentracing.Span, err error) {
+var DefaultTagger = func(span opentracing.Span, m *mq.Message, err error) {
 	if err != nil {
 		span.SetTag("error.error", err)
 	}
@@ -18,7 +18,7 @@ var DefaultTagger = func(span opentracing.Span, err error) {
 type Middleware struct {
 	Handler  mq.Handler
 	SpanName string
-	Tagger   func(opentracing.Span, error)
+	Tagger   func(opentracing.Span, *mq.Message, error)
 }
 
 func (m *Middleware) HandleMessage(msg *mq.Message) error {
@@ -38,7 +38,7 @@ func (m *Middleware) HandleMessage(msg *mq.Message) error {
 	ctx := opentracing.ContextWithSpan(msg.Context(), span)
 	msg = msg.WithContext(ctx)
 	err := m.Handler.HandleMessage(msg)
-	tagger(span, err)
+	tagger(span, msg, err)
 
 	return err
 }

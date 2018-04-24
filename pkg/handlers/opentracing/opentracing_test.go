@@ -63,8 +63,8 @@ func TestHandler(t *testing.T) {
 		Handler: mq.HandlerFunc(func(*mq.Message) error {
 			return nil
 		}),
-		Tagger: func(span opentracing.Span, err error) {
-			mq_opentracing.DefaultTagger(span, err)
+		Tagger: func(span opentracing.Span, m *mq.Message, err error) {
+			mq_opentracing.DefaultTagger(span, m, err)
 			span.SetTag("foo", "bar")
 		},
 	}
