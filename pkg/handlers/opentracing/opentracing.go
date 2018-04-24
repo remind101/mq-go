@@ -32,20 +32,14 @@ func (m *Middleware) HandleMessage(msg *mq.Message) error {
 		spanName = m.SpanName
 	}
 
-	span := opentracing.StartSpan(spanName)
-	if msg.SQSMessage.MessageAttributes != nil {
-		spanContext, err := opentracing.GlobalTracer().Extract(
-			opentracing.TextMap,
-			SQSMessageAttributeCarrier(msg.SQSMessage.MessageAttributes),
-		)
-		if err != nil {
-			span = opentracing.StartSpan(spanName, ext.RPCServerOption(spanContext))
-		}
-	}
+	span := SpanFromMessage(spanName, msg.SQSMessage)
+	defer span.Finish()
+
 	ctx := opentracing.ContextWithSpan(msg.Context(), span)
 	msg = msg.WithContext(ctx)
 	err := m.Handler.HandleMessage(msg)
 	tagger(span, err)
+
 	return err
 }
 
@@ -67,4 +61,26 @@ func (c SQSMessageAttributeCarrier) ForeachKey(handler func(key, val string) err
 		}
 	}
 	return nil
+}
+
+func InjectSpan(span opentracing.Span, m *sqs.Message) error {
+	return opentracing.GlobalTracer().Inject(
+		span.Context(),
+		opentracing.TextMap,
+		SQSMessageAttributeCarrier(m.MessageAttributes),
+	)
+}
+
+func SpanFromMessage(spanName string, m *sqs.Message) opentracing.Span {
+	span := opentracing.StartSpan(spanName)
+	if m.MessageAttributes != nil {
+		spanContext, err := opentracing.GlobalTracer().Extract(
+			opentracing.TextMap,
+			SQSMessageAttributeCarrier(m.MessageAttributes),
+		)
+		if err == nil {
+			span = opentracing.StartSpan(spanName, ext.RPCServerOption(spanContext))
+		}
+	}
+	return span
 }
