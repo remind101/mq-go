@@ -29,6 +29,14 @@ const (
 	// DefaultVisibilityTimeout is the default VisibilityTimeout used when
 	// receiving messages.
 	DefaultVisibilityTimeout = 30
+
+	// DefaultDeletionTimeout is the default amount of time before any pending
+	// deletions are batch deleted.
+	DefaultDeletionTimeout = 10
+
+	// BatchDeleteMaxMessages is the maximum allowed number of messages in a
+	// batch delete request.
+	BatchDeleteMaxMessages = 10
 )
 
 // Server is responsible for running the request loop to receive SQS messages
@@ -46,8 +54,9 @@ type Server struct {
 	WaitTimeSeconds       *int64
 	VisibilityTimeout     *int64
 
-	shutdown chan struct{}
-	done     chan struct{}
+	deletionsCh chan *Message
+	shutdown    chan struct{}
+	done        chan struct{}
 }
 
 // ServerDefaults is used by NewServer to initialize a Server with defaults.
@@ -82,8 +91,9 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 		QueueURL: queueURL,
 		Handler:  h,
 
-		shutdown: make(chan struct{}),
-		done:     make(chan struct{}),
+		deletionsCh: make(chan *Message, BatchDeleteMaxMessages),
+		shutdown:    make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 
 	opts = append([]func(*Server){ServerDefaults}, opts...)
@@ -99,6 +109,63 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 func (c *Server) Start() {
 	var wg sync.WaitGroup
 	messagesCh := make(chan *Message)
+	doneProcessing := make(chan struct{})
+	doneDeleting := make(chan struct{})
+
+	// DeleteMessageBatch request loop. Messages will be deleted when we have
+	// 10 messages to delete or when the ticker ticks, whichever comes first.
+	go func() {
+		input := &sqs.DeleteMessageBatchInput{
+			QueueUrl: aws.String(c.QueueURL),
+			Entries:  []*sqs.DeleteMessageBatchRequestEntry{},
+		}
+		t := time.NewTicker(DefaultDeletionTimeout)
+		var lastBatchDelete time.Time
+
+		for {
+			select {
+			// If no batch deletes have occurred between ticks, trigger a
+			// batch delete
+			case tick := <-t.C:
+				if tick.Sub(lastBatchDelete) > DefaultDeletionTimeout {
+					c.deleteMessageBatch(input)
+				}
+
+			// If a deletion is received, append to the buffer, and flush
+			// if the buffer is full.
+			case m := <-c.deletionsCh:
+				input.Entries = append(input.Entries, &sqs.DeleteMessageBatchRequestEntry{
+					Id:            m.SQSMessage.MessageId,
+					ReceiptHandle: m.SQSMessage.ReceiptHandle,
+				})
+
+				if len(input.Entries) >= BatchDeleteMaxMessages {
+					c.deleteMessageBatch(input)
+					lastBatchDelete = time.Now()
+				}
+
+			// If processing is finished, spawn a goroutine to drain the rest of the
+			// deletion channel.
+			case <-doneProcessing:
+				for m := range c.deletionsCh {
+					input.Entries = append(input.Entries, &sqs.DeleteMessageBatchRequestEntry{
+						Id:            m.SQSMessage.MessageId,
+						ReceiptHandle: m.SQSMessage.ReceiptHandle,
+					})
+
+					if len(input.Entries) >= BatchDeleteMaxMessages {
+						c.deleteMessageBatch(input)
+					}
+				}
+
+				// Flush the buffer if any entries remain
+				if len(input.Entries) > 0 {
+					c.deleteMessageBatch(input)
+				}
+				close(doneDeleting)
+			}
+		}
+	}()
 
 	// ReceiveMessage request loop
 	go func() {
@@ -107,7 +174,8 @@ func (c *Server) Start() {
 			case <-c.shutdown:
 				close(messagesCh)
 				wg.Wait()
-				close(c.done)
+				close(doneProcessing)
+				close(c.deletionsCh)
 				return
 			default:
 				out, err := c.receiveMessage()
@@ -127,6 +195,13 @@ func (c *Server) Start() {
 	for i := 0; i < c.Concurrency; i++ {
 		c.startWorker(messagesCh, &wg)
 	}
+
+	go func() {
+		// Close main done channel once everything is done.
+		<-doneProcessing
+		<-doneDeleting
+		close(c.done)
+	}()
 }
 
 // Shutdown gracefully shuts down the Server.
@@ -160,12 +235,39 @@ func (c *Server) startWorker(messages <-chan *Message, wg *sync.WaitGroup) {
 	}()
 }
 
+// processMessages processes messages by passing them to the Handler. If no
+// error is returned the message is queued for deletion.
 func (c *Server) processMessages(messages <-chan *Message) {
 	for m := range messages {
 		if err := c.Handler.HandleMessage(m); err != nil {
 			c.ErrorHandler(err)
+		} else {
+			c.deleteMessage(m)
 		}
 	}
+}
+
+func (c *Server) deleteMessage(m *Message) {
+	c.deletionsCh <- m
+}
+
+func (c *Server) deleteMessageBatch(input *sqs.DeleteMessageBatchInput) {
+	out, err := c.Client.DeleteMessageBatch(input)
+	if err != nil {
+		c.ErrorHandler(err)
+	}
+	for _, failure := range out.Failed {
+		e := fmt.Errorf("failed to delete message id=%s code=%s error=%s sender_fault=%t",
+			aws.StringValue(failure.Id),
+			aws.StringValue(failure.Code),
+			aws.StringValue(failure.Message),
+			aws.BoolValue(failure.SenderFault),
+		)
+		c.ErrorHandler(e)
+	}
+
+	// Clear entries for next batch.
+	input.Entries = []*sqs.DeleteMessageBatchRequestEntry{}
 }
 
 // ServerGroup represents a list of Servers.
@@ -189,8 +291,8 @@ func (sg *ServerGroup) Shutdown(ctx context.Context) <-chan error {
 	return errCh
 }
 
-// RootHandler is a root handler responsible for deleting messages from the
-// queue and handling errors.
+// RootHandler is a root handler responsible for adding delay in messages
+// that have error'd.
 //
 // Queues MUST have a dead letter queue or else messages that cannot succeed
 // will never be removed from the queue.
@@ -204,10 +306,43 @@ func RootHandler(h Handler) Handler {
 			return ChangeVisibilityWithRetryPolicy(m)
 		}
 
-		// Processing successful, delete message
-		return m.Delete()
+		return nil
 	})
 }
+
+// func handleDeletes() {
+// 	batchInput := &sqs.DeleteMessageBatchInput{
+// 		QueueUrl: s.queueURL,
+// 	}
+// 	var (
+// 		err           error
+// 		entriesBuffer []*sqs.DeleteMessageBatchRequestEntry
+// 		delRequest    *deleteRequest
+// 	)
+// 	for delRequest = range s.toDelete {
+// 		entriesBuffer = append(entriesBuffer, delRequest.entry)
+// 		// if the subber is stopped and this is the last request,
+// 		// flush quit!
+// 		if s.isStopped() && s.inFlightCount() == 1 {
+// 			break
+// 		}
+// 		// if buffer is full, send the request
+// 		if len(entriesBuffer) > *s.cfg.DeleteBufferSize {
+// 			batchInput.Entries = entriesBuffer
+// 			_, err = s.sqs.DeleteMessageBatch(batchInput)
+// 			// cleaer buffer
+// 			entriesBuffer = []*sqs.DeleteMessageBatchRequestEntry{}
+// 		}
+
+// 		delRequest.receipt <- err
+// 	}
+// 	// clear any remainders before shutdown
+// 	if len(entriesBuffer) > 0 {
+// 		batchInput.Entries = entriesBuffer
+// 		_, err = s.sqs.DeleteMessageBatch(batchInput)
+// 		delRequest.receipt <- err
+// 	}
+// }
 
 type delayable interface {
 	Delay() *int64 // Seconds
