@@ -310,40 +310,6 @@ func RootHandler(h Handler) Handler {
 	})
 }
 
-// func handleDeletes() {
-// 	batchInput := &sqs.DeleteMessageBatchInput{
-// 		QueueUrl: s.queueURL,
-// 	}
-// 	var (
-// 		err           error
-// 		entriesBuffer []*sqs.DeleteMessageBatchRequestEntry
-// 		delRequest    *deleteRequest
-// 	)
-// 	for delRequest = range s.toDelete {
-// 		entriesBuffer = append(entriesBuffer, delRequest.entry)
-// 		// if the subber is stopped and this is the last request,
-// 		// flush quit!
-// 		if s.isStopped() && s.inFlightCount() == 1 {
-// 			break
-// 		}
-// 		// if buffer is full, send the request
-// 		if len(entriesBuffer) > *s.cfg.DeleteBufferSize {
-// 			batchInput.Entries = entriesBuffer
-// 			_, err = s.sqs.DeleteMessageBatch(batchInput)
-// 			// cleaer buffer
-// 			entriesBuffer = []*sqs.DeleteMessageBatchRequestEntry{}
-// 		}
-
-// 		delRequest.receipt <- err
-// 	}
-// 	// clear any remainders before shutdown
-// 	if len(entriesBuffer) > 0 {
-// 		batchInput.Entries = entriesBuffer
-// 		_, err = s.sqs.DeleteMessageBatch(batchInput)
-// 		delRequest.receipt <- err
-// 	}
-// }
-
 type delayable interface {
 	Delay() *int64 // Seconds
 }
