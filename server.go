@@ -47,7 +47,8 @@ const (
 // There are three parts to the message processing pipeline:
 //
 // 1. Receiving loop - pushes Messages to the messagesCh
-// 2. Processing loops (multiple) - reads from messagesCh, pushes Messages to the deletionsCh
+// 2. Processing loops (multiple) - reads from messagesCh, pushes Messages to
+//    the deletionsCh
 // 3. Deletion loop - reads from deletionsCh
 //
 // On shutdown, the receiving loop is closed, and closes the messagesCh used by
@@ -57,10 +58,8 @@ const (
 // processing, they will close the doneProcessing channel.
 //
 // After doneProcessing is closed, the deletion loop will drain the deletionsCh
-// and after finishing, close the doneDeleting channel.
-//
-// After the doneDeleting channel is closed, the done channel is closed, signaling
-// that the Server has shutdown gracefully.
+// and after finishing, close the done channel, signaling that the Server has
+// shutdown gracefully.
 type Server struct {
 	QueueURL     string
 	Client       sqsiface.SQSAPI
@@ -79,10 +78,8 @@ type Server struct {
 	messagesCh     chan *Message
 	doneProcessing chan struct{}
 
-	deletionsCh  chan *Message
-	doneDeleting chan struct{}
-
-	done chan struct{}
+	deletionsCh chan *Message
+	done        chan struct{}
 }
 
 // ServerDefaults is used by NewServer to initialize a Server with defaults.
@@ -120,7 +117,6 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 		messagesCh:     make(chan *Message),
 		deletionsCh:    make(chan *Message, BatchDeleteMaxMessages),
 		doneProcessing: make(chan struct{}),
-		doneDeleting:   make(chan struct{}),
 		shutdown:       make(chan struct{}),
 		done:           make(chan struct{}),
 	}
@@ -136,48 +132,31 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 // Start starts the request loop for receiving messages and a configurable
 // number of Handler routines for message processing.
 func (c *Server) Start() {
-	var wg sync.WaitGroup
-
+	// Start routines in reverse order so channel consumers are ready to receive.
 	go c.startDeleter()
+	go c.startProcessors()
+	go c.startReceiver()
+}
 
-	// ReceiveMessage request loop
-	go func() {
-		for {
-			select {
-			case <-c.shutdown:
-				close(c.messagesCh)
-				wg.Wait()
-				close(c.doneProcessing)
-				return
-			default:
-				out, err := c.receiveMessage()
-				if err != nil {
-					c.ErrorHandler(err)
-					time.Sleep(1 * time.Second)
-				} else {
-					for _, message := range out.Messages {
-						m := NewMessage(c.QueueURL, message, c.Client)
-						c.messagesCh <- m // this will block if Subscribers are not ready to receive
-					}
+func (c *Server) startReceiver() {
+	for {
+		select {
+		case <-c.shutdown:
+			close(c.messagesCh)
+			return
+		default:
+			out, err := c.receiveMessage()
+			if err != nil {
+				c.ErrorHandler(err)
+				time.Sleep(1 * time.Second)
+			} else {
+				for _, message := range out.Messages {
+					m := NewMessage(c.QueueURL, message, c.Client)
+					c.messagesCh <- m // this will block if Subscribers are not ready to receive
 				}
 			}
 		}
-	}()
-
-	for i := 0; i < c.Concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			c.processMessages()
-		}()
 	}
-
-	go func() {
-		// Close main done channel once everything is done.
-		<-c.doneProcessing
-		<-c.doneDeleting
-		close(c.done)
-	}()
 }
 
 func (c *Server) startDeleter() {
@@ -230,10 +209,26 @@ func (c *Server) startDeleter() {
 			if len(input.Entries) > 0 {
 				c.deleteMessageBatch(input)
 			}
-			close(c.doneDeleting)
+
+			// Signal that the server is done, this is the last step in the
+			// processing pipeline.
+			close(c.done)
 			return
 		}
 	}
+}
+
+func (c *Server) startProcessors() {
+	var wg sync.WaitGroup
+	for i := 0; i < c.Concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.processMessages()
+		}()
+	}
+	wg.Wait()
+	close(c.doneProcessing)
 }
 
 // Shutdown gracefully shuts down the Server.
