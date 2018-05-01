@@ -6,7 +6,7 @@ jobs:
   build:
     docker:
       - image: circleci/golang:1.10
-    working_directory: /go/src/github.com/{{ORG_NAME}}/{{REPO_NAME}}
+    working_directory: /go/src/github.com/remind101/mq-go
     steps:
       - checkout
       - run: go get -v -t -d ./...
