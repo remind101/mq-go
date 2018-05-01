@@ -165,12 +165,35 @@ func (c *Client) DeleteMessage(params *sqs.DeleteMessageInput) (*sqs.DeleteMessa
 	defer c.Unlock()
 	data := &sqs.DeleteMessageOutput{}
 
-	q := c.Queue(aws.StringValue(params.QueueUrl))
+	c.deleteMessage(params.QueueUrl, params.ReceiptHandle)
+	return data, nil
+}
+
+func (c *Client) deleteMessage(queueUrl, receiptHandle *string) {
+	q := c.Queue(aws.StringValue(queueUrl))
 	for i, m := range q {
-		if aws.StringValue(m.SQSMessage.ReceiptHandle) == aws.StringValue(params.ReceiptHandle) {
-			c.queues[aws.StringValue(params.QueueUrl)] = append(q[:i], q[i+1:]...)
+		if aws.StringValue(m.SQSMessage.ReceiptHandle) == aws.StringValue(receiptHandle) {
+			c.queues[aws.StringValue(queueUrl)] = append(q[:i], q[i+1:]...)
 			break
 		}
+	}
+}
+
+// DeleteMessageBatch satisfies the sqsiface.SQSAPI interface.
+func (c *Client) DeleteMessageBatch(params *sqs.DeleteMessageBatchInput) (*sqs.DeleteMessageBatchOutput, error) {
+	c.Lock()
+	defer c.Unlock()
+
+	data := &sqs.DeleteMessageBatchOutput{
+		Failed:     []*sqs.BatchResultErrorEntry{},
+		Successful: []*sqs.DeleteMessageBatchResultEntry{},
+	}
+
+	for _, e := range params.Entries {
+		c.deleteMessage(params.QueueUrl, e.ReceiptHandle)
+		data.Successful = append(data.Successful, &sqs.DeleteMessageBatchResultEntry{
+			Id: e.Id,
+		})
 	}
 
 	return data, nil

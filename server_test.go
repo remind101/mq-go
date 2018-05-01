@@ -19,7 +19,7 @@ func TestServer(t *testing.T) {
 	h := mq.HandlerFunc(func(m *mq.Message) error {
 		assert.Equal(t, `{"name":"test"}`, aws.StringValue(m.SQSMessage.Body))
 		close(done)
-		return m.Delete()
+		return nil
 	})
 
 	sp := mq.NewServer(qURL, h, func(s *mq.Server) {

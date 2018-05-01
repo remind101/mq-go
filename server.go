@@ -41,6 +41,26 @@ const (
 
 // Server is responsible for running the request loop to receive SQS messages
 // from a single SQS Queue, and pass them to a Handler.
+//
+// Graceful shutdown:
+//
+// There are three parts to the message processing pipeline:
+//
+// 1. Receiving loop - pushes Messages to the messagesCh
+// 2. Processing loops (multiple) - reads from messagesCh, pushes Messages to the deletionsCh
+// 3. Deletion loop - reads from deletionsCh
+//
+// On shutdown, the receiving loop is closed, and closes the messagesCh used by
+// processing loops.
+//
+// Once processing loops have drained the messagesCh and finished
+// processing, they will close the doneProcessing channel.
+//
+// After doneProcessing is closed, the deletion loop will drain the deletionsCh
+// and after finishing, close the doneDeleting channel.
+//
+// After the doneDeleting channel is closed, the done channel is closed, signaling
+// that the Server has shutdown gracefully.
 type Server struct {
 	QueueURL     string
 	Client       sqsiface.SQSAPI
@@ -54,9 +74,15 @@ type Server struct {
 	WaitTimeSeconds       *int64
 	VisibilityTimeout     *int64
 
-	deletionsCh chan *Message
-	shutdown    chan struct{}
-	done        chan struct{}
+	shutdown chan struct{}
+
+	messagesCh     chan *Message
+	doneProcessing chan struct{}
+
+	deletionsCh  chan *Message
+	doneDeleting chan struct{}
+
+	done chan struct{}
 }
 
 // ServerDefaults is used by NewServer to initialize a Server with defaults.
@@ -91,9 +117,12 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 		QueueURL: queueURL,
 		Handler:  h,
 
-		deletionsCh: make(chan *Message, BatchDeleteMaxMessages),
-		shutdown:    make(chan struct{}),
-		done:        make(chan struct{}),
+		messagesCh:     make(chan *Message),
+		deletionsCh:    make(chan *Message, BatchDeleteMaxMessages),
+		doneProcessing: make(chan struct{}),
+		doneDeleting:   make(chan struct{}),
+		shutdown:       make(chan struct{}),
+		done:           make(chan struct{}),
 	}
 
 	opts = append([]func(*Server){ServerDefaults}, opts...)
@@ -108,74 +137,17 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 // number of Handler routines for message processing.
 func (c *Server) Start() {
 	var wg sync.WaitGroup
-	messagesCh := make(chan *Message)
-	doneProcessing := make(chan struct{})
-	doneDeleting := make(chan struct{})
 
-	// DeleteMessageBatch request loop. Messages will be deleted when we have
-	// 10 messages to delete or when the ticker ticks, whichever comes first.
-	go func() {
-		input := &sqs.DeleteMessageBatchInput{
-			QueueUrl: aws.String(c.QueueURL),
-			Entries:  []*sqs.DeleteMessageBatchRequestEntry{},
-		}
-		t := time.NewTicker(DefaultDeletionTimeout)
-		var lastBatchDelete time.Time
-
-		for {
-			select {
-			// If no batch deletes have occurred between ticks, trigger a
-			// batch delete
-			case tick := <-t.C:
-				if tick.Sub(lastBatchDelete) > DefaultDeletionTimeout {
-					c.deleteMessageBatch(input)
-				}
-
-			// If a deletion is received, append to the buffer, and flush
-			// if the buffer is full.
-			case m := <-c.deletionsCh:
-				input.Entries = append(input.Entries, &sqs.DeleteMessageBatchRequestEntry{
-					Id:            m.SQSMessage.MessageId,
-					ReceiptHandle: m.SQSMessage.ReceiptHandle,
-				})
-
-				if len(input.Entries) >= BatchDeleteMaxMessages {
-					c.deleteMessageBatch(input)
-					lastBatchDelete = time.Now()
-				}
-
-			// If processing is finished, spawn a goroutine to drain the rest of the
-			// deletion channel.
-			case <-doneProcessing:
-				for m := range c.deletionsCh {
-					input.Entries = append(input.Entries, &sqs.DeleteMessageBatchRequestEntry{
-						Id:            m.SQSMessage.MessageId,
-						ReceiptHandle: m.SQSMessage.ReceiptHandle,
-					})
-
-					if len(input.Entries) >= BatchDeleteMaxMessages {
-						c.deleteMessageBatch(input)
-					}
-				}
-
-				// Flush the buffer if any entries remain
-				if len(input.Entries) > 0 {
-					c.deleteMessageBatch(input)
-				}
-				close(doneDeleting)
-			}
-		}
-	}()
+	go c.startDeleter()
 
 	// ReceiveMessage request loop
 	go func() {
 		for {
 			select {
 			case <-c.shutdown:
-				close(messagesCh)
+				close(c.messagesCh)
 				wg.Wait()
-				close(doneProcessing)
-				close(c.deletionsCh)
+				close(c.doneProcessing)
 				return
 			default:
 				out, err := c.receiveMessage()
@@ -185,7 +157,7 @@ func (c *Server) Start() {
 				} else {
 					for _, message := range out.Messages {
 						m := NewMessage(c.QueueURL, message, c.Client)
-						messagesCh <- m // this will block if Subscribers are not ready to receive
+						c.messagesCh <- m // this will block if Subscribers are not ready to receive
 					}
 				}
 			}
@@ -193,15 +165,75 @@ func (c *Server) Start() {
 	}()
 
 	for i := 0; i < c.Concurrency; i++ {
-		c.startWorker(messagesCh, &wg)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.processMessages()
+		}()
 	}
 
 	go func() {
 		// Close main done channel once everything is done.
-		<-doneProcessing
-		<-doneDeleting
+		<-c.doneProcessing
+		<-c.doneDeleting
 		close(c.done)
 	}()
+}
+
+func (c *Server) startDeleter() {
+	// DeleteMessageBatch request loop. Messages will be deleted when we have
+	// 10 messages to delete or when the ticker ticks, whichever comes first.
+	input := &sqs.DeleteMessageBatchInput{
+		QueueUrl: aws.String(c.QueueURL),
+		Entries:  []*sqs.DeleteMessageBatchRequestEntry{},
+	}
+	t := time.NewTicker(DefaultDeletionTimeout)
+	var lastBatchDelete time.Time
+
+	addToBatch := func(m *sqs.Message) {
+		input.Entries = append(input.Entries, &sqs.DeleteMessageBatchRequestEntry{
+			Id:            m.MessageId,
+			ReceiptHandle: m.ReceiptHandle,
+		})
+
+		if len(input.Entries) >= BatchDeleteMaxMessages {
+			c.deleteMessageBatch(input)
+			// Clear entries for next batch.
+			input.Entries = []*sqs.DeleteMessageBatchRequestEntry{}
+			lastBatchDelete = time.Now()
+		}
+	}
+
+	for {
+		select {
+		// If no batch deletes have occurred between ticks, trigger a
+		// batch delete
+		case tick := <-t.C:
+			if tick.Sub(lastBatchDelete) > DefaultDeletionTimeout {
+				c.deleteMessageBatch(input)
+			}
+
+		// If a deletion is received, append to the buffer, and flush
+		// if the buffer is full.
+		case m := <-c.deletionsCh:
+			addToBatch(m.SQSMessage)
+
+		// If processing is finished, drain the rest of the
+		// deletion channel.
+		case <-c.doneProcessing:
+			close(c.deletionsCh)
+			for m := range c.deletionsCh {
+				addToBatch(m.SQSMessage)
+			}
+
+			// Flush the buffer if any entries remain
+			if len(input.Entries) > 0 {
+				c.deleteMessageBatch(input)
+			}
+			close(c.doneDeleting)
+			return
+		}
+	}
 }
 
 // Shutdown gracefully shuts down the Server.
@@ -227,18 +259,10 @@ func (c *Server) receiveMessage() (*sqs.ReceiveMessageOutput, error) {
 	})
 }
 
-func (c *Server) startWorker(messages <-chan *Message, wg *sync.WaitGroup) {
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		c.processMessages(messages)
-	}()
-}
-
 // processMessages processes messages by passing them to the Handler. If no
 // error is returned the message is queued for deletion.
-func (c *Server) processMessages(messages <-chan *Message) {
-	for m := range messages {
+func (c *Server) processMessages() {
+	for m := range c.messagesCh {
 		if err := c.Handler.HandleMessage(m); err != nil {
 			c.ErrorHandler(err)
 		} else {
@@ -265,9 +289,6 @@ func (c *Server) deleteMessageBatch(input *sqs.DeleteMessageBatchInput) {
 		)
 		c.ErrorHandler(e)
 	}
-
-	// Clear entries for next batch.
-	input.Entries = []*sqs.DeleteMessageBatchRequestEntry{}
 }
 
 // ServerGroup represents a list of Servers.
