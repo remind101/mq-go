@@ -59,6 +59,17 @@
   revision = "0b12d6b5"
 
 [[projects]]
+  name = "github.com/opentracing/opentracing-go"
+  packages = [
+    ".",
+    "ext",
+    "log",
+    "mocktracer"
+  ]
+  revision = "1949ddbfd147afd4d964a9f00b24eb291e0e7c38"
+  version = "v1.0.2"
+
+[[projects]]
   name = "github.com/pmezard/go-difflib"
   packages = ["difflib"]
   revision = "792786c7400a136282c1664665ae0a8db921c6c2"
@@ -73,9 +84,15 @@
   revision = "12b6f73e6084dad08a7c6e575284b177ecafbc71"
   version = "v1.2.1"
 
+[[projects]]
+  branch = "master"
+  name = "golang.org/x/net"
+  packages = ["context"]
+  revision = "5f9ae10d9af5b1c89ae6904293b14b064d4ada23"
+
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "b837d5a0f60cb2cae79929ef2dde410bb8c078aa090ac4f7976a1700b62204b1"
+  inputs-digest = "64cdd47a54c8680245eb7867639eca95994fe4d8498eb9ea31b111f991dbc251"
   solver-name = "gps-cdcl"
   solver-version = 1
