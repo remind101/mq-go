@@ -74,6 +74,7 @@ func (c *Client) SendMessage(params *sqs.SendMessageInput) (*sqs.SendMessageOutp
 			Body:              params.MessageBody,
 			MessageAttributes: params.MessageAttributes,
 			ReceiptHandle:     aws.String(uuid.New().String()),
+			MessageId:         aws.String(uuid.New().String()),
 		},
 		VisibleAfter: time.Now(),
 	}

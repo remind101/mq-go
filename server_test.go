@@ -3,8 +3,12 @@ package mq_test
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sqs"
@@ -29,13 +33,7 @@ func TestServer(t *testing.T) {
 		return nil
 	})
 
-	sp := mq.NewServer(qURL, h, func(s *mq.Server) {
-		s.Client = c
-		s.ErrorHandler = func(err error) {
-			t.Fatal(err)
-		}
-	})
-
+	sp := newServer(t, qURL, h, c)
 	sp.Start()
 	<-done             // Wait for server to handle message
 	closeServer(t, sp) // Wait for server to shutdown
@@ -58,13 +56,7 @@ func TestServerWaitsForProcessingToFinish(t *testing.T) {
 		return nil
 	})
 
-	sp := mq.NewServer(qURL, h, func(s *mq.Server) {
-		s.Client = c
-		s.ErrorHandler = func(err error) {
-			t.Fatal(err)
-		}
-	})
-
+	sp := newServer(t, qURL, h, c)
 	sp.Start()
 	<-done             // Wait for server to receive message
 	closeServer(t, sp) // Wait for server to shutdown
@@ -93,13 +85,7 @@ func TestServerDeletesWhenBatchMaxReached(t *testing.T) {
 		return nil
 	})
 
-	sp := mq.NewServer(qURL, h, func(s *mq.Server) {
-		s.Client = c
-		s.ErrorHandler = func(err error) {
-			t.Fatal(err)
-		}
-	})
-
+	sp := newServer(t, qURL, h, c)
 	sp.Start()
 	defer closeServer(t, sp)
 
@@ -130,12 +116,7 @@ func TestServerDeletesWhenIntervalIsReached(t *testing.T) {
 		return nil
 	})
 
-	sp := mq.NewServer(qURL, h, func(s *mq.Server) {
-		s.Client = c
-		s.ErrorHandler = func(err error) {
-			t.Fatal(err)
-		}
-	})
+	sp := newServer(t, qURL, h, c)
 	sp.DeletionInterval = 10 * time.Millisecond
 	sp.Start()
 	defer closeServer(t, sp)
@@ -150,6 +131,18 @@ func TestServerDeletesWhenIntervalIsReached(t *testing.T) {
 	eventually(t, 20*time.Millisecond, func() bool {
 		return len(c.Queue(qURL)) == 0
 	}, "expected messages to be batch removed after the DeletionInterval")
+}
+
+func newServer(t *testing.T, qURL string, h mq.Handler, c sqsiface.SQSAPI) *mq.Server {
+	return mq.NewServer(qURL, h, func(s *mq.Server) {
+		s.Client = c
+		s.ErrorHandler = func(err error) {
+			t.Fatal(err)
+		}
+		if os.Getenv("DEBUG") == "true" {
+			s.Logger = log.New(os.Stderr, "debug - ", 0)
+		}
+	})
 }
 
 func closeServer(t *testing.T, s *mq.Server) {

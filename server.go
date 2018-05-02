@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,7 +34,7 @@ const (
 	// DefaultDeletionInterval is the default interval at which messages pending
 	// deletion are batch deleted (if number of pending has not reached
 	// BatchDeleteMaxMessages).
-	DefaultDeletionInterval = 10
+	DefaultDeletionInterval = 10 * time.Second
 
 	// DefaultBatchDeleteMaxMessages defaults to the the maximum allowed number
 	// of messages in a batch delete request.
@@ -42,12 +43,12 @@ const (
 
 // Logger defines a simple interface to support debug logging in the Server.
 type Logger interface {
-	Println(string)
+	Println(...interface{})
 }
 
 type discardLogger struct{}
 
-func (l *discardLogger) Println(s string) {}
+func (l *discardLogger) Println(v ...interface{}) {}
 
 // Server is responsible for running the request loop to receive SQS messages
 // from a single SQS Queue, and pass them to a Handler.
@@ -160,6 +161,7 @@ func (c *Server) startReceiver() {
 	for {
 		select {
 		case <-c.shutdown:
+			c.Logger.Println("received shutdown signal, closing messages channel")
 			close(c.messagesCh)
 			return
 		default:
@@ -170,6 +172,7 @@ func (c *Server) startReceiver() {
 			} else {
 				for _, message := range out.Messages {
 					m := NewMessage(c.QueueURL, message, c.Client)
+					c.Logger.Println(fmt.Sprintf("adding message to the messages channel: %s", aws.StringValue(m.SQSMessage.ReceiptHandle)))
 					c.messagesCh <- m // this will block if Subscribers are not ready to receive
 				}
 			}
@@ -188,6 +191,7 @@ func (c *Server) startDeleter() {
 	var lastBatchDelete time.Time
 
 	addToBatch := func(m *sqs.Message) {
+		c.Logger.Println(fmt.Sprintf("adding message for batch deletion: %s", aws.StringValue(m.ReceiptHandle)))
 		input.Entries = append(input.Entries, &sqs.DeleteMessageBatchRequestEntry{
 			Id:            m.MessageId,
 			ReceiptHandle: m.ReceiptHandle,
@@ -195,8 +199,6 @@ func (c *Server) startDeleter() {
 
 		if len(input.Entries) >= c.BatchDeleteMaxMessages {
 			c.deleteMessageBatch(input)
-			// Clear entries for next batch.
-			input.Entries = []*sqs.DeleteMessageBatchRequestEntry{}
 			lastBatchDelete = time.Now()
 		}
 	}
@@ -206,7 +208,8 @@ func (c *Server) startDeleter() {
 		// If no batch deletes have occurred between ticks, trigger a
 		// batch delete
 		case tick := <-t.C:
-			if tick.Sub(lastBatchDelete) > c.DeletionInterval {
+			if tick.Sub(lastBatchDelete) > c.DeletionInterval && len(input.Entries) > 0 {
+				c.Logger.Println("no message deleted within the DeletionInterval, triggering a deletion")
 				c.deleteMessageBatch(input)
 			}
 
@@ -218,6 +221,7 @@ func (c *Server) startDeleter() {
 		// If processing is finished, drain the rest of the
 		// deletion channel.
 		case <-c.doneProcessing:
+			c.Logger.Println("draining deletions channel")
 			close(c.deletionsCh)
 			for m := range c.deletionsCh {
 				addToBatch(m.SQSMessage)
@@ -230,6 +234,7 @@ func (c *Server) startDeleter() {
 
 			// Signal that the server is done, this is the last step in the
 			// processing pipeline.
+			c.Logger.Println("shut down cleanly")
 			close(c.done)
 			return
 		}
@@ -246,6 +251,7 @@ func (c *Server) startProcessors() {
 		}()
 	}
 	wg.Wait()
+	c.Logger.Println("finished processing messages")
 	close(c.doneProcessing)
 }
 
@@ -289,6 +295,12 @@ func (c *Server) deleteMessage(m *Message) {
 }
 
 func (c *Server) deleteMessageBatch(input *sqs.DeleteMessageBatchInput) {
+	messageHandles := make([]string, len(input.Entries))
+	for i, e := range input.Entries {
+		messageHandles[i] = aws.StringValue(e.ReceiptHandle)
+	}
+	c.Logger.Println(fmt.Sprintf("batch deleting %d messages: %s", len(input.Entries), strings.Join(messageHandles, ", ")))
+
 	out, err := c.Client.DeleteMessageBatch(input)
 	if err != nil {
 		c.ErrorHandler(err)
@@ -302,6 +314,8 @@ func (c *Server) deleteMessageBatch(input *sqs.DeleteMessageBatchInput) {
 		)
 		c.ErrorHandler(e)
 	}
+	// Clear entries for next batch.
+	input.Entries = []*sqs.DeleteMessageBatchRequestEntry{}
 }
 
 // ServerGroup represents a list of Servers.
