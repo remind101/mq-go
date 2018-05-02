@@ -20,7 +20,7 @@ const (
 	DefaultConcurrency = 1
 
 	// DefaultMaxNumberOfMessages defaults to the maximum number of messages the
-	// Server is can request when receiving messages.
+	// Server can request when receiving messages.
 	DefaultMaxNumberOfMessages = 10
 
 	// DefaultWaitTimeSeconds is the default WaitTimeSeconds used when receiving
