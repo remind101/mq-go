@@ -151,10 +151,9 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 // Start starts the request loop for receiving messages and a configurable
 // number of Handler routines for message processing.
 func (c *Server) Start() {
-	// Start routines in reverse order so channel consumers are ready to receive.
-	go c.startDeleter()
-	go c.startProcessors()
 	go c.startReceiver()
+	go c.startProcessors()
+	go c.startDeleter()
 }
 
 func (c *Server) startReceiver() {
