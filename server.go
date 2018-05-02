@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,8 +19,8 @@ const (
 	// DefaultConcurrency is the default concurrency for the Server.
 	DefaultConcurrency = 1
 
-	// DefaultMaxNumberOfMessages is the default maximum number of messages the
-	// Server will request when receiving messages.
+	// DefaultMaxNumberOfMessages defaults to the maximum number of messages the
+	// Server can request when receiving messages.
 	DefaultMaxNumberOfMessages = 10
 
 	// DefaultWaitTimeSeconds is the default WaitTimeSeconds used when receiving
@@ -27,12 +28,49 @@ const (
 	DefaultWaitTimeSeconds = 1
 
 	// DefaultVisibilityTimeout is the default VisibilityTimeout used when
-	// receiving messages.
+	// receiving messages in seconds.
 	DefaultVisibilityTimeout = 30
+
+	// DefaultDeletionInterval is the default interval at which messages pending
+	// deletion are batch deleted (if number of pending has not reached
+	// BatchDeleteMaxMessages).
+	DefaultDeletionInterval = 10 * time.Second
+
+	// DefaultBatchDeleteMaxMessages defaults to the the maximum allowed number
+	// of messages in a batch delete request.
+	DefaultBatchDeleteMaxMessages = 10
 )
+
+// Logger defines a simple interface to support debug logging in the Server.
+type Logger interface {
+	Println(...interface{})
+}
+
+type discardLogger struct{}
+
+func (l *discardLogger) Println(v ...interface{}) {}
 
 // Server is responsible for running the request loop to receive SQS messages
 // from a single SQS Queue, and pass them to a Handler.
+//
+// Graceful shutdown:
+//
+// There are three parts to the message processing pipeline:
+//
+// 1. Receiving loop - pushes Messages to the messagesCh
+// 2. Processing loops (multiple) - reads from messagesCh, pushes Messages to
+//    the deletionsCh
+// 3. Deletion loop - reads from deletionsCh
+//
+// On shutdown, the receiving loop is closed, and closes the messagesCh used by
+// processing loops.
+//
+// Once processing loops have drained the messagesCh and finished
+// processing, they will close the doneProcessing channel.
+//
+// After doneProcessing is closed, the deletion loop will drain the deletionsCh
+// and after finishing, close the done channel, signaling that the Server has
+// shutdown gracefully.
 type Server struct {
 	QueueURL     string
 	Client       sqsiface.SQSAPI
@@ -46,8 +84,18 @@ type Server struct {
 	WaitTimeSeconds       *int64
 	VisibilityTimeout     *int64
 
+	BatchDeleteMaxMessages int
+	DeletionInterval       time.Duration
+
+	Logger Logger
+
 	shutdown chan struct{}
-	done     chan struct{}
+
+	messagesCh     chan *Message
+	doneProcessing chan struct{}
+
+	deletionsCh chan *Message
+	done        chan struct{}
 }
 
 // ServerDefaults is used by NewServer to initialize a Server with defaults.
@@ -67,6 +115,9 @@ func ServerDefaults(s *Server) {
 	s.MaxNumberOfMessages = aws.Int64(DefaultMaxNumberOfMessages)
 	s.WaitTimeSeconds = aws.Int64(DefaultWaitTimeSeconds)
 	s.VisibilityTimeout = aws.Int64(DefaultVisibilityTimeout)
+	s.BatchDeleteMaxMessages = DefaultBatchDeleteMaxMessages
+	s.DeletionInterval = DefaultDeletionInterval
+	s.Logger = &discardLogger{}
 }
 
 // WithClient configures a Server with a custom sqs Client.
@@ -81,9 +132,6 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 	s := &Server{
 		QueueURL: queueURL,
 		Handler:  h,
-
-		shutdown: make(chan struct{}),
-		done:     make(chan struct{}),
 	}
 
 	opts = append([]func(*Server){ServerDefaults}, opts...)
@@ -91,42 +139,119 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 		opt(s)
 	}
 
+	s.messagesCh = make(chan *Message)
+	s.deletionsCh = make(chan *Message, s.BatchDeleteMaxMessages)
+	s.doneProcessing = make(chan struct{})
+	s.shutdown = make(chan struct{})
+	s.done = make(chan struct{})
+
 	return s
 }
 
 // Start starts the request loop for receiving messages and a configurable
 // number of Handler routines for message processing.
 func (c *Server) Start() {
-	var wg sync.WaitGroup
-	messagesCh := make(chan *Message)
+	go c.startReceiver()
+	go c.startProcessors()
+	go c.startDeleter()
+}
 
-	// ReceiveMessage request loop
-	go func() {
-		for {
-			select {
-			case <-c.shutdown:
-				close(messagesCh)
-				wg.Wait()
-				close(c.done)
-				return
-			default:
-				out, err := c.receiveMessage()
-				if err != nil {
-					c.ErrorHandler(err)
-					time.Sleep(1 * time.Second)
-				} else {
-					for _, message := range out.Messages {
-						m := NewMessage(c.QueueURL, message, c.Client)
-						messagesCh <- m // this will block if Subscribers are not ready to receive
-					}
+func (c *Server) startReceiver() {
+	for {
+		select {
+		case <-c.shutdown:
+			c.Logger.Println("received shutdown signal, closing messages channel")
+			close(c.messagesCh)
+			return
+		default:
+			out, err := c.receiveMessage()
+			if err != nil {
+				c.ErrorHandler(err)
+				time.Sleep(1 * time.Second)
+			} else {
+				for _, message := range out.Messages {
+					m := NewMessage(c.QueueURL, message, c.Client)
+					c.Logger.Println(fmt.Sprintf("adding message to the messages channel: %s", aws.StringValue(m.SQSMessage.ReceiptHandle)))
+					c.messagesCh <- m // this will block if Subscribers are not ready to receive
 				}
 			}
 		}
-	}()
-
-	for i := 0; i < c.Concurrency; i++ {
-		c.startWorker(messagesCh, &wg)
 	}
+}
+
+func (c *Server) startDeleter() {
+	// DeleteMessageBatch request loop. Messages will be deleted when we have
+	// 10 messages to delete or when the ticker ticks, whichever comes first.
+	input := &sqs.DeleteMessageBatchInput{
+		QueueUrl: aws.String(c.QueueURL),
+		Entries:  []*sqs.DeleteMessageBatchRequestEntry{},
+	}
+	t := time.NewTicker(c.DeletionInterval)
+	var lastBatchDelete time.Time
+
+	addToBatch := func(m *sqs.Message) {
+		c.Logger.Println(fmt.Sprintf("adding message for batch deletion: %s", aws.StringValue(m.ReceiptHandle)))
+		input.Entries = append(input.Entries, &sqs.DeleteMessageBatchRequestEntry{
+			Id:            m.MessageId,
+			ReceiptHandle: m.ReceiptHandle,
+		})
+
+		if len(input.Entries) >= c.BatchDeleteMaxMessages {
+			c.deleteMessageBatch(input)
+			lastBatchDelete = time.Now()
+		}
+	}
+
+	for {
+		select {
+		// If no batch deletes have occurred between ticks, trigger a
+		// batch delete
+		case tick := <-t.C:
+			if tick.Sub(lastBatchDelete) > c.DeletionInterval && len(input.Entries) > 0 {
+				c.Logger.Println("no message deleted within the DeletionInterval, triggering a deletion")
+				c.deleteMessageBatch(input)
+			}
+
+		// If a deletion is received, append to the buffer, and flush
+		// if the buffer is full.
+		case m := <-c.deletionsCh:
+			addToBatch(m.SQSMessage)
+
+		// If processing is finished, drain the rest of the
+		// deletion channel.
+		case <-c.doneProcessing:
+			c.Logger.Println("draining deletions channel")
+			close(c.deletionsCh)
+			for m := range c.deletionsCh {
+				addToBatch(m.SQSMessage)
+			}
+
+			// Flush the buffer if any entries remain
+			if len(input.Entries) > 0 {
+				c.deleteMessageBatch(input)
+			}
+
+			// Signal that the server is done, this is the last step in the
+			// processing pipeline.
+			c.Logger.Println("shut down cleanly")
+			close(c.done)
+			return
+		}
+	}
+}
+
+func (c *Server) startProcessors() {
+	var wg sync.WaitGroup
+	for i := 0; i < c.Concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.processMessages()
+		}()
+	}
+	wg.Wait()
+	c.Logger.Println("finished processing messages")
+	close(c.doneProcessing)
 }
 
 // Shutdown gracefully shuts down the Server.
@@ -152,20 +277,44 @@ func (c *Server) receiveMessage() (*sqs.ReceiveMessageOutput, error) {
 	})
 }
 
-func (c *Server) startWorker(messages <-chan *Message, wg *sync.WaitGroup) {
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		c.processMessages(messages)
-	}()
-}
-
-func (c *Server) processMessages(messages <-chan *Message) {
-	for m := range messages {
+// processMessages processes messages by passing them to the Handler. If no
+// error is returned the message is queued for deletion.
+func (c *Server) processMessages() {
+	for m := range c.messagesCh {
 		if err := c.Handler.HandleMessage(m); err != nil {
 			c.ErrorHandler(err)
+		} else {
+			c.deleteMessage(m)
 		}
 	}
+}
+
+func (c *Server) deleteMessage(m *Message) {
+	c.deletionsCh <- m
+}
+
+func (c *Server) deleteMessageBatch(input *sqs.DeleteMessageBatchInput) {
+	messageHandles := make([]string, len(input.Entries))
+	for i, e := range input.Entries {
+		messageHandles[i] = aws.StringValue(e.ReceiptHandle)
+	}
+	c.Logger.Println(fmt.Sprintf("batch deleting %d messages: %s", len(input.Entries), strings.Join(messageHandles, ", ")))
+
+	out, err := c.Client.DeleteMessageBatch(input)
+	if err != nil {
+		c.ErrorHandler(err)
+	}
+	for _, failure := range out.Failed {
+		e := fmt.Errorf("failed to delete message id=%s code=%s error=%s sender_fault=%t",
+			aws.StringValue(failure.Id),
+			aws.StringValue(failure.Code),
+			aws.StringValue(failure.Message),
+			aws.BoolValue(failure.SenderFault),
+		)
+		c.ErrorHandler(e)
+	}
+	// Clear entries for next batch.
+	input.Entries = []*sqs.DeleteMessageBatchRequestEntry{}
 }
 
 // ServerGroup represents a list of Servers.
@@ -189,8 +338,8 @@ func (sg *ServerGroup) Shutdown(ctx context.Context) <-chan error {
 	return errCh
 }
 
-// RootHandler is a root handler responsible for deleting messages from the
-// queue and handling errors.
+// RootHandler is a root handler responsible for adding delay in messages
+// that have error'd.
 //
 // Queues MUST have a dead letter queue or else messages that cannot succeed
 // will never be removed from the queue.
@@ -204,8 +353,7 @@ func RootHandler(h Handler) Handler {
 			return ChangeVisibilityWithRetryPolicy(m)
 		}
 
-		// Processing successful, delete message
-		return m.Delete()
+		return nil
 	})
 }
 

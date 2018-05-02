@@ -1,6 +1,7 @@
 package memsqs
 
 import (
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
@@ -73,6 +74,7 @@ func (c *Client) SendMessage(params *sqs.SendMessageInput) (*sqs.SendMessageOutp
 			Body:              params.MessageBody,
 			MessageAttributes: params.MessageAttributes,
 			ReceiptHandle:     aws.String(uuid.New().String()),
+			MessageId:         aws.String(uuid.New().String()),
 		},
 		VisibleAfter: time.Now(),
 	}
@@ -165,11 +167,44 @@ func (c *Client) DeleteMessage(params *sqs.DeleteMessageInput) (*sqs.DeleteMessa
 	defer c.Unlock()
 	data := &sqs.DeleteMessageOutput{}
 
-	q := c.Queue(aws.StringValue(params.QueueUrl))
+	c.deleteMessage(params.QueueUrl, params.ReceiptHandle)
+	return data, nil
+}
+
+func (c *Client) deleteMessage(queueURL, receiptHandle *string) bool {
+	q := c.Queue(aws.StringValue(queueURL))
 	for i, m := range q {
-		if aws.StringValue(m.SQSMessage.ReceiptHandle) == aws.StringValue(params.ReceiptHandle) {
-			c.queues[aws.StringValue(params.QueueUrl)] = append(q[:i], q[i+1:]...)
-			break
+		if aws.StringValue(m.SQSMessage.ReceiptHandle) == aws.StringValue(receiptHandle) {
+			c.queues[aws.StringValue(queueURL)] = append(q[:i], q[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// DeleteMessageBatch satisfies the sqsiface.SQSAPI interface.
+func (c *Client) DeleteMessageBatch(params *sqs.DeleteMessageBatchInput) (*sqs.DeleteMessageBatchOutput, error) {
+	c.Lock()
+	defer c.Unlock()
+
+	data := &sqs.DeleteMessageBatchOutput{
+		Failed:     []*sqs.BatchResultErrorEntry{},
+		Successful: []*sqs.DeleteMessageBatchResultEntry{},
+	}
+
+	for _, e := range params.Entries {
+		if c.deleteMessage(params.QueueUrl, e.ReceiptHandle) {
+			data.Successful = append(data.Successful, &sqs.DeleteMessageBatchResultEntry{
+				Id: e.Id,
+			})
+		} else {
+			// NOTE: Code and error message may not be accurate here.
+			data.Failed = append(data.Failed, &sqs.BatchResultErrorEntry{
+				Code:        aws.String("NotFound"),
+				Id:          e.Id,
+				Message:     aws.String(fmt.Sprintf("ReceiptHandle %s not found.", aws.StringValue(e.ReceiptHandle))),
+				SenderFault: aws.Bool(true),
+			})
 		}
 	}
 

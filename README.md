@@ -8,6 +8,7 @@ The goal of this project is to provide tooling to utilize SQS effectively in Go.
 * Retry with expontial backoff via visibility timeouts and dead letter queues.
 * Router Handler for multiplexing messages over a single queue.
 * Server with configurable concurrency and graceful shutdown.
+* Automatic batch fetching and deletion.
 
 ## QuickStart
 
@@ -32,8 +33,9 @@ func main() {
 	h := mq.HandlerFunc(func(m *mq.Message) error {
 		fmt.Printf("Received message: %s", aws.String(m.SQSMessage.Body))
 
-		// Remove message from queue.
-		return m.Delete()
+		// Returning no error signifies the message was processed successfully.
+		// The Server will queue the message for deletion.
+		return nil
 	})
 
 	// Configure mq.Server

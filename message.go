@@ -18,6 +18,7 @@ type Message struct {
 	ctx    context.Context
 }
 
+// NewMessage returns a fully initialized Message.
 func NewMessage(queueURL string, sqsMessage *sqs.Message, client sqsiface.SQSAPI) *Message {
 	return &Message{
 		QueueURL:    queueURL,
@@ -28,7 +29,8 @@ func NewMessage(queueURL string, sqsMessage *sqs.Message, client sqsiface.SQSAPI
 	}
 }
 
-// Delete removes the message from the queue.
+// Delete removes the message from the queue. Use is discouraged however, since
+// the Server will handle message deletion more efficiently.
 func (m *Message) Delete() error {
 	return deleteMessage(mustClient(m.client), m)
 }
