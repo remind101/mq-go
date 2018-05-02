@@ -1,6 +1,7 @@
 package memsqs
 
 import (
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
@@ -169,14 +170,15 @@ func (c *Client) DeleteMessage(params *sqs.DeleteMessageInput) (*sqs.DeleteMessa
 	return data, nil
 }
 
-func (c *Client) deleteMessage(queueUrl, receiptHandle *string) {
-	q := c.Queue(aws.StringValue(queueUrl))
+func (c *Client) deleteMessage(queueURL, receiptHandle *string) bool {
+	q := c.Queue(aws.StringValue(queueURL))
 	for i, m := range q {
 		if aws.StringValue(m.SQSMessage.ReceiptHandle) == aws.StringValue(receiptHandle) {
-			c.queues[aws.StringValue(queueUrl)] = append(q[:i], q[i+1:]...)
-			break
+			c.queues[aws.StringValue(queueURL)] = append(q[:i], q[i+1:]...)
+			return true
 		}
 	}
+	return false
 }
 
 // DeleteMessageBatch satisfies the sqsiface.SQSAPI interface.
@@ -190,10 +192,19 @@ func (c *Client) DeleteMessageBatch(params *sqs.DeleteMessageBatchInput) (*sqs.D
 	}
 
 	for _, e := range params.Entries {
-		c.deleteMessage(params.QueueUrl, e.ReceiptHandle)
-		data.Successful = append(data.Successful, &sqs.DeleteMessageBatchResultEntry{
-			Id: e.Id,
-		})
+		if c.deleteMessage(params.QueueUrl, e.ReceiptHandle) {
+			data.Successful = append(data.Successful, &sqs.DeleteMessageBatchResultEntry{
+				Id: e.Id,
+			})
+		} else {
+			// NOTE: Code and error message may not be accurate here.
+			data.Failed = append(data.Failed, &sqs.BatchResultErrorEntry{
+				Code:        aws.String("NotFound"),
+				Id:          e.Id,
+				Message:     aws.String(fmt.Sprintf("ReceiptHandle %s not found.", aws.StringValue(e.ReceiptHandle))),
+				SenderFault: aws.Bool(true),
+			})
+		}
 	}
 
 	return data, nil
