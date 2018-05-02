@@ -18,8 +18,8 @@ const (
 	// DefaultConcurrency is the default concurrency for the Server.
 	DefaultConcurrency = 1
 
-	// DefaultMaxNumberOfMessages is the default maximum number of messages the
-	// Server will request when receiving messages.
+	// DefaultMaxNumberOfMessages defaults to the maximum number of messages the
+	// Server is can request when receiving messages.
 	DefaultMaxNumberOfMessages = 10
 
 	// DefaultWaitTimeSeconds is the default WaitTimeSeconds used when receiving
@@ -27,16 +27,17 @@ const (
 	DefaultWaitTimeSeconds = 1
 
 	// DefaultVisibilityTimeout is the default VisibilityTimeout used when
-	// receiving messages.
+	// receiving messages in seconds.
 	DefaultVisibilityTimeout = 30
 
-	// DefaultDeletionTimeout is the default amount of time before any pending
-	// deletions are batch deleted.
-	DefaultDeletionTimeout = 10
+	// DefaultDeletionInterval is the default interval at which messages pending
+	// deletion are batch deleted (if number of pending has not reached
+	// BatchDeleteMaxMessages).
+	DefaultDeletionInterval = 10
 
-	// BatchDeleteMaxMessages is the maximum allowed number of messages in a
-	// batch delete request.
-	BatchDeleteMaxMessages = 10
+	// DefaultBatchDeleteMaxMessages defaults to the the maximum allowed number
+	// of messages in a batch delete request.
+	DefaultBatchDeleteMaxMessages = 10
 )
 
 // Server is responsible for running the request loop to receive SQS messages
@@ -73,6 +74,9 @@ type Server struct {
 	WaitTimeSeconds       *int64
 	VisibilityTimeout     *int64
 
+	BatchDeleteMaxMessages int
+	DeletionInterval       time.Duration
+
 	shutdown chan struct{}
 
 	messagesCh     chan *Message
@@ -99,6 +103,8 @@ func ServerDefaults(s *Server) {
 	s.MaxNumberOfMessages = aws.Int64(DefaultMaxNumberOfMessages)
 	s.WaitTimeSeconds = aws.Int64(DefaultWaitTimeSeconds)
 	s.VisibilityTimeout = aws.Int64(DefaultVisibilityTimeout)
+	s.BatchDeleteMaxMessages = DefaultBatchDeleteMaxMessages
+	s.DeletionInterval = DefaultDeletionInterval
 }
 
 // WithClient configures a Server with a custom sqs Client.
@@ -113,18 +119,18 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 	s := &Server{
 		QueueURL: queueURL,
 		Handler:  h,
-
-		messagesCh:     make(chan *Message),
-		deletionsCh:    make(chan *Message, BatchDeleteMaxMessages),
-		doneProcessing: make(chan struct{}),
-		shutdown:       make(chan struct{}),
-		done:           make(chan struct{}),
 	}
 
 	opts = append([]func(*Server){ServerDefaults}, opts...)
 	for _, opt := range opts {
 		opt(s)
 	}
+
+	s.messagesCh = make(chan *Message)
+	s.deletionsCh = make(chan *Message, s.BatchDeleteMaxMessages)
+	s.doneProcessing = make(chan struct{})
+	s.shutdown = make(chan struct{})
+	s.done = make(chan struct{})
 
 	return s
 }
@@ -166,7 +172,7 @@ func (c *Server) startDeleter() {
 		QueueUrl: aws.String(c.QueueURL),
 		Entries:  []*sqs.DeleteMessageBatchRequestEntry{},
 	}
-	t := time.NewTicker(DefaultDeletionTimeout)
+	t := time.NewTicker(c.DeletionInterval)
 	var lastBatchDelete time.Time
 
 	addToBatch := func(m *sqs.Message) {
@@ -175,7 +181,7 @@ func (c *Server) startDeleter() {
 			ReceiptHandle: m.ReceiptHandle,
 		})
 
-		if len(input.Entries) >= BatchDeleteMaxMessages {
+		if len(input.Entries) >= c.BatchDeleteMaxMessages {
 			c.deleteMessageBatch(input)
 			// Clear entries for next batch.
 			input.Entries = []*sqs.DeleteMessageBatchRequestEntry{}
@@ -188,7 +194,7 @@ func (c *Server) startDeleter() {
 		// If no batch deletes have occurred between ticks, trigger a
 		// batch delete
 		case tick := <-t.C:
-			if tick.Sub(lastBatchDelete) > DefaultDeletionTimeout {
+			if tick.Sub(lastBatchDelete) > c.DeletionInterval {
 				c.deleteMessageBatch(input)
 			}
 
