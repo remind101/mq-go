@@ -9,6 +9,7 @@ The goal of this project is to provide tooling to utilize SQS effectively in Go.
 * Router Handler for multiplexing messages over a single queue.
 * Server with configurable concurrency and graceful shutdown.
 * Automatic batch fetching and deletion.
+* Opentracing support
 
 ## QuickStart
 
