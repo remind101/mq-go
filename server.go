@@ -40,6 +40,15 @@ const (
 	DefaultBatchDeleteMaxMessages = 10
 )
 
+// Logger defines a simple interface to support debug logging in the Server.
+type Logger interface {
+	Println(string)
+}
+
+type discardLogger struct{}
+
+func (l *discardLogger) Println(s string) {}
+
 // Server is responsible for running the request loop to receive SQS messages
 // from a single SQS Queue, and pass them to a Handler.
 //
@@ -77,6 +86,8 @@ type Server struct {
 	BatchDeleteMaxMessages int
 	DeletionInterval       time.Duration
 
+	Logger Logger
+
 	shutdown chan struct{}
 
 	messagesCh     chan *Message
@@ -105,6 +116,7 @@ func ServerDefaults(s *Server) {
 	s.VisibilityTimeout = aws.Int64(DefaultVisibilityTimeout)
 	s.BatchDeleteMaxMessages = DefaultBatchDeleteMaxMessages
 	s.DeletionInterval = DefaultDeletionInterval
+	s.Logger = &discardLogger{}
 }
 
 // WithClient configures a Server with a custom sqs Client.
