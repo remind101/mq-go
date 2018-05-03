@@ -50,27 +50,38 @@ type discardLogger struct{}
 
 func (l *discardLogger) Println(v ...interface{}) {}
 
-// Server is responsible for running the request loop to receive SQS messages
-// from a single SQS Queue, and pass them to a Handler.
+// Server is responsible for running the request loop to receive messages
+// from a single SQS Queue. It manages the message processing pipeline.
 //
-// Graceful shutdown:
+// There are three sections of the processing pipeline:
 //
-// There are three parts to the message processing pipeline:
+// 1. Receiving messages
+// The Server starts a single goroutine to batch request messages from QueueURL.
+// The frequency of this call is controlled with WaitTimeSeconds. Messages are
+// sent to an unbuffered channel. This ensures that the Server does not continue
+// requesting messages is the processing goroutines are unable to keep up.
 //
-// 1. Receiving loop - pushes Messages to the messagesCh
-// 2. Processing loops (multiple) - reads from messagesCh, pushes Messages to
-//    the deletionsCh
-// 3. Deletion loop - reads from deletionsCh
+// 2. Processing messages
+// The Server starts one or more goroutines for processing messages from the
+// messages channel. The number of goroutines is configured by Concurrency.
+// These goroutines simply pass messages to the Handler. If the Handler returns
+// no error, the message will be sent to the deletions channel.
 //
-// On shutdown, the receiving loop is closed, and closes the messagesCh used by
-// processing loops.
+// 3. Deleting messages
+// The Server starts a single goroutine to batch delete processed messages.
+// It will delete messages when the batch size is reached or if no deletions
+// have occurred within an interval. This interval must be smaller than the
+// VisibilityTimeout or messages could be received again before deletion occurs.
 //
-// Once processing loops have drained the messagesCh and finished
-// processing, they will close the doneProcessing channel.
+// On shutdown, the receiving loop ends, and the messages channel used by
+// processing loops is closed.
 //
-// After doneProcessing is closed, the deletion loop will drain the deletionsCh
-// and after finishing, close the done channel, signaling that the Server has
-// shutdown gracefully.
+// Once processing loops have drained the messages channel and finished
+// processing, they will signal to the deletion goroutine to finish.
+//
+// When the deletion goroutine receives the signal, the deletion loop will drain
+// the deletions channel and after finishing, close the done channel, signaling
+// that the Server has shutdown gracefully.
 type Server struct {
 	QueueURL     string
 	Client       sqsiface.SQSAPI
@@ -169,6 +180,9 @@ func (c *Server) startReceiver() {
 				c.ErrorHandler(err)
 				time.Sleep(1 * time.Second)
 			} else {
+				// TODO: If no messages are received, increase WaitTimeSeconds
+				// on the next request. When messages are received reset
+				// WaitTimeSeconds to original value.
 				for _, message := range out.Messages {
 					m := NewMessage(c.QueueURL, message, c.Client)
 					c.Logger.Println(fmt.Sprintf("adding message to the messages channel: %s", aws.StringValue(m.SQSMessage.ReceiptHandle)))
@@ -177,6 +191,20 @@ func (c *Server) startReceiver() {
 			}
 		}
 	}
+}
+
+func (c *Server) startProcessors() {
+	var wg sync.WaitGroup
+	for i := 0; i < c.Concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.processMessages()
+		}()
+	}
+	wg.Wait()
+	c.Logger.Println("finished processing messages")
+	close(c.doneProcessing)
 }
 
 func (c *Server) startDeleter() {
@@ -238,20 +266,6 @@ func (c *Server) startDeleter() {
 			return
 		}
 	}
-}
-
-func (c *Server) startProcessors() {
-	var wg sync.WaitGroup
-	for i := 0; i < c.Concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			c.processMessages()
-		}()
-	}
-	wg.Wait()
-	c.Logger.Println("finished processing messages")
-	close(c.doneProcessing)
 }
 
 // Shutdown gracefully shuts down the Server.

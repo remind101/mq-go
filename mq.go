@@ -1,3 +1,4 @@
+// Package mq provides primitives for consuming SQS queues.
 package mq // import "github.com/remind101/mq-go"
 
 // A Handler processes a Message.
