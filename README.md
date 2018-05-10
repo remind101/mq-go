@@ -18,6 +18,7 @@ https://godoc.org/github.com/remind101/mq-go
 ## QuickStart
 
 ``` golang
+func main() {
 	queueURL := "https://sqs.us-east-2.amazonaws.com/123456789012/MyQueue"
 
 	h := mq.HandlerFunc(func(m *mq.Message) error {
@@ -33,4 +34,5 @@ https://godoc.org/github.com/remind101/mq-go
 
 	// Start a loop to receive SQS messages and pass them to the Handler.
 	s.Start()
+}
 ```
