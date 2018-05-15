@@ -83,7 +83,7 @@ func newPublisher(t *testing.T, qURL string, c sqsiface.SQSAPI) *mq.Publisher {
 			}
 		}
 		if os.Getenv("DEBUG") == "true" {
-			p.Logger = log.New(os.Stderr, "debug - ", 0)
+			p.Logger = log.New(os.Stderr, "publisher - ", 0)
 		}
 	})
 }
