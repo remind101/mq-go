@@ -34,7 +34,7 @@ type Publisher struct {
 }
 
 // PublisherOpt defines a function that configures a Publisher.
-type PublisherOpt = func(*Publisher)
+type PublisherOpt func(*Publisher)
 
 // PublisherDefaults contains the default configuration for a new Publisher.
 var PublisherDefaults = func(p *Publisher) {
