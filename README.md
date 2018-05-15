@@ -9,6 +9,7 @@ The goal of this project is to provide tooling to utilize SQS effectively in Go.
 * Router Handler for multiplexing messages over a single queue.
 * Server with configurable concurrency and graceful shutdown.
 * Automatic batch fetching and deletion.
+* Publisher for batch sending.
 * Opentracing support
 
 ## Documentation
@@ -34,5 +35,19 @@ func main() {
 
 	// Start a loop to receive SQS messages and pass them to the Handler.
 	s.Start()
+	defer s.Shutdown(context.Background())
+
+	// Start a publisher
+	p := mq.NewPublisher(queueURL)
+	p.Start()
+	defer p.Shutdown(context.Background())
+
+	// Publish messages (will be batched).
+	p.Publish(&sqs.SendMessageBatchRequestEntry{
+		MessageBody: aws.String("Hello"),
+	})
+	p.Publish(&sqs.SendMessageBatchRequestEntry{
+		MessageBody: aws.String("World!"),
+	})
 }
 ```

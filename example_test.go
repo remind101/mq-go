@@ -1,9 +1,11 @@
 package mq_test
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/sqs"
 	mq "github.com/remind101/mq-go"
 )
 
@@ -23,4 +25,18 @@ func Example() {
 
 	// Start a loop to receive SQS messages and pass them to the Handler.
 	s.Start()
+	defer s.Shutdown(context.Background())
+
+	// Start a publisher
+	p := mq.NewPublisher(queueURL)
+	p.Start()
+	defer p.Shutdown(context.Background())
+
+	// Publish messages (will be batched).
+	p.Publish(&sqs.SendMessageBatchRequestEntry{
+		MessageBody: aws.String("Hello"),
+	})
+	p.Publish(&sqs.SendMessageBatchRequestEntry{
+		MessageBody: aws.String("World!"),
+	})
 }
