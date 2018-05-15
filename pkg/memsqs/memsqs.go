@@ -85,6 +85,39 @@ func (c *Client) SendMessage(params *sqs.SendMessageInput) (*sqs.SendMessageOutp
 	return &sqs.SendMessageOutput{}, nil
 }
 
+// SendMessageBatch satisfies the sqsiface.SQSAPI interface.
+func (c *Client) SendMessageBatch(params *sqs.SendMessageBatchInput) (*sqs.SendMessageBatchOutput, error) {
+	c.Lock()
+	defer c.Unlock()
+
+	data := &sqs.SendMessageBatchOutput{
+		Failed:     []*sqs.BatchResultErrorEntry{},
+		Successful: []*sqs.SendMessageBatchResultEntry{},
+	}
+
+	for _, entry := range params.Entries {
+
+		if entry.MessageAttributes == nil {
+			entry.MessageAttributes = map[string]*sqs.MessageAttributeValue{}
+		}
+
+		msg := &Message{
+			SQSMessage: &sqs.Message{
+				Body:              entry.MessageBody,
+				MessageAttributes: entry.MessageAttributes,
+				ReceiptHandle:     aws.String(uuid.New().String()),
+				MessageId:         aws.String(uuid.New().String()),
+			},
+			VisibleAfter: time.Now(),
+		}
+
+		msg.VisibleAfter = msg.VisibleAfter.Add(time.Duration(aws.Int64Value(entry.DelaySeconds)) * time.Second)
+		c.queues[aws.StringValue(params.QueueUrl)] = append(c.queues[aws.StringValue(params.QueueUrl)], msg)
+	}
+
+	return data, nil
+}
+
 // ReceiveMessage satisfies the sqsiface.SQSAPI interface.
 func (c *Client) ReceiveMessage(params *sqs.ReceiveMessageInput) (*sqs.ReceiveMessageOutput, error) {
 	c.Lock()
