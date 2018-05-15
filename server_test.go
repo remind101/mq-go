@@ -140,7 +140,7 @@ func newServer(t *testing.T, qURL string, h mq.Handler, c sqsiface.SQSAPI) *mq.S
 			t.Fatal(err)
 		}
 		if os.Getenv("DEBUG") == "true" {
-			s.Logger = log.New(os.Stderr, "debug - ", 0)
+			s.Logger = log.New(os.Stderr, "server - ", 0)
 		}
 	})
 }
