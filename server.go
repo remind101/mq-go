@@ -3,6 +3,8 @@ package mq
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
@@ -194,17 +196,42 @@ func (c *Server) startReceiver() {
 }
 
 func (c *Server) startProcessors() {
+	chPool := make([]chan *Message, c.Concurrency)
 	var wg sync.WaitGroup
 	for i := 0; i < c.Concurrency; i++ {
+		chPool[i] = make(chan *Message)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c.processMessages()
+			c.processMessages(chPool[i])
 		}()
 	}
+
+	go func() {
+		for m := range c.messagesCh {
+			index := c.distributeMessage(m, c.Concurrency)
+			chPool[index] <- m
+		}
+		for _, ch := range chPool {
+			close(ch)
+		}
+	}()
+
 	wg.Wait()
 	c.Logger.Println("finished processing messages")
 	close(c.doneProcessing)
+}
+
+const MessageAttributeNameDistributionKey = "distribution_key"
+
+func (c *Server) distributeMessage(m *Message, shards int) int {
+	if key, ok := m.SQSMessage.MessageAttributes[MessageAttributeNameDistributionKey]; ok {
+		hash := fnv.New32a()
+		hash.Write(key.BinaryValue)
+		return int(int64(hash.Sum32()) % int64(shards))
+	}
+
+	return rand.Int() % shards
 }
 
 func (c *Server) startDeleter() {
@@ -293,8 +320,8 @@ func (c *Server) receiveMessage() (*sqs.ReceiveMessageOutput, error) {
 
 // processMessages processes messages by passing them to the Handler. If no
 // error is returned the message is queued for deletion.
-func (c *Server) processMessages() {
-	for m := range c.messagesCh {
+func (c *Server) processMessages(ch chan *Message) {
+	for m := range ch {
 		if err := c.Handler.HandleMessage(m); err != nil {
 			c.ErrorHandler(err)
 		} else {
