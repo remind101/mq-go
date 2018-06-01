@@ -17,6 +17,7 @@ type BoundedProcessor struct {
 	Server *Server
 }
 
+// Process satisfies the Processor interface.
 func (p *BoundedProcessor) Process(messagesCh <-chan *Message, deletionsCh chan<- *Message, done chan struct{}) {
 	var wg sync.WaitGroup
 	for i := 0; i < p.Server.Concurrency; i++ {
@@ -42,7 +43,8 @@ func (p *BoundedProcessor) processMessages(messagesCh <-chan *Message, deletions
 	}
 }
 
-// MessageAttributeNamePartitionKey is the messages attribute used to determine the partition to process the message in.
+// MessageAttributeNamePartitionKey is the messages attribute used to determine
+// the partition to process the message in.
 const MessageAttributeNamePartitionKey = "partition_key"
 
 // PartitionedProcessor is a processor that creates Server.Concurrency goroutines
@@ -53,16 +55,17 @@ type PartitionedProcessor struct {
 	Server *Server
 }
 
+// Process satisfies the Processor interface.
 func (p *PartitionedProcessor) Process(messagesCh <-chan *Message, deletionsCh chan<- *Message, done chan struct{}) {
 	chPool := make([]chan *Message, p.Server.Concurrency)
 	var wg sync.WaitGroup
 	for i := 0; i < p.Server.Concurrency; i++ {
 		chPool[i] = make(chan *Message)
 		wg.Add(1)
-		go func() {
+		go func(ch <-chan *Message) {
 			defer wg.Done()
-			p.processMessages(chPool[i], deletionsCh)
-		}()
+			p.processMessages(ch, deletionsCh)
+		}(chPool[i])
 	}
 
 	go func() {
