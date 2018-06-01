@@ -6,7 +6,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -98,7 +97,8 @@ type Server struct {
 	BatchDeleteMaxMessages int
 	DeletionInterval       time.Duration
 
-	Logger Logger
+	Logger    Logger
+	Processor Processor
 
 	shutdown chan struct{}
 
@@ -129,6 +129,7 @@ func ServerDefaults(s *Server) {
 	s.BatchDeleteMaxMessages = DefaultBatchDeleteMaxMessages
 	s.DeletionInterval = DefaultDeletionInterval
 	s.Logger = &discardLogger{}
+	s.Processor = &BoundedProcessor{s}
 }
 
 // WithClient configures a Server with a custom sqs Client.
@@ -163,7 +164,7 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 // number of Handler routines for message processing.
 func (c *Server) Start() {
 	go c.startReceiver()
-	go c.startProcessors()
+	go c.startProcessor()
 	go c.startDeleter()
 }
 
@@ -193,18 +194,8 @@ func (c *Server) startReceiver() {
 	}
 }
 
-func (c *Server) startProcessors() {
-	var wg sync.WaitGroup
-	for i := 0; i < c.Concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			c.processMessages()
-		}()
-	}
-	wg.Wait()
-	c.Logger.Println("finished processing messages")
-	close(c.doneProcessing)
+func (c *Server) startProcessor() {
+	c.Processor.Process(c.messagesCh, c.deletionsCh, c.doneProcessing)
 }
 
 func (c *Server) startDeleter() {
@@ -289,22 +280,6 @@ func (c *Server) receiveMessage() (*sqs.ReceiveMessageOutput, error) {
 		WaitTimeSeconds:       c.WaitTimeSeconds,
 		VisibilityTimeout:     c.VisibilityTimeout,
 	})
-}
-
-// processMessages processes messages by passing them to the Handler. If no
-// error is returned the message is queued for deletion.
-func (c *Server) processMessages() {
-	for m := range c.messagesCh {
-		if err := c.Handler.HandleMessage(m); err != nil {
-			c.ErrorHandler(err)
-		} else {
-			c.deleteMessage(m)
-		}
-	}
-}
-
-func (c *Server) deleteMessage(m *Message) {
-	c.deletionsCh <- m
 }
 
 func (c *Server) deleteMessageBatch(input *sqs.DeleteMessageBatchInput) {
