@@ -50,6 +50,35 @@ func (p *BoundedProcessor) processMessages(messagesCh <-chan *Message, deletions
 	}
 }
 
+// UnBoundedProcessor is a message processor that creates a new goroutine to
+// process each message. It ignores the Server.Concurrency value.
+type UnBoundedProcessor struct {
+	Server *Server
+}
+
+// Process satisfies the Processor interface.
+func (p *UnBoundedProcessor) Process(messagesCh <-chan *Message, deletionsCh chan<- *Message, done chan struct{}) {
+	var wg sync.WaitGroup
+	for msg := range messagesCh {
+		wg.Add(1)
+		go func(m *Message) {
+			defer wg.Done()
+			p.processMessage(m, deletionsCh)
+		}(msg)
+	}
+	wg.Wait()
+	p.Server.Logger.Println("finished processing messages")
+	close(done)
+}
+
+func (p *UnBoundedProcessor) processMessage(m *Message, deletionsCh chan<- *Message) {
+	if err := p.Server.Handler.HandleMessage(m); err != nil {
+		p.Server.ErrorHandler(err)
+	} else {
+		deletionsCh <- m
+	}
+}
+
 // MessageAttributeNamePartitionKey is the messages attribute used to determine
 // the partition to process the message in.
 const MessageAttributeNamePartitionKey = "partition_key"
