@@ -1,6 +1,7 @@
 package mq
 
 import (
+	"fmt"
 	"hash/fnv"
 	"math/rand"
 	"sync"
@@ -8,6 +9,11 @@ import (
 
 // Processor defines an interface for processing messages.
 type Processor interface {
+	// Process processes messages. A well behaved processor will:
+	// * Receive messages from the messagesCh in a loop until that channel is
+	//   closed.
+	// * Send messages to the deletionsCh if message was successfully processed.
+	// * Close the done channel when finished processing.
 	Process(messagesCh <-chan *Message, deletionsCh chan<- *Message, done chan struct{})
 }
 
@@ -30,7 +36,6 @@ func (p *BoundedProcessor) Process(messagesCh <-chan *Message, deletionsCh chan<
 	wg.Wait()
 	p.Server.Logger.Println("finished processing messages")
 	close(done)
-
 }
 
 func (p *BoundedProcessor) processMessages(messagesCh <-chan *Message, deletionsCh chan<- *Message) {
@@ -71,6 +76,7 @@ func (p *PartitionedProcessor) Process(messagesCh <-chan *Message, deletionsCh c
 	go func() {
 		for m := range messagesCh {
 			index := p.partitionMessage(m, p.Server.Concurrency)
+			p.Server.Logger.Println(fmt.Sprintf("partitioning message: %d", index))
 			chPool[index] <- m
 		}
 		for _, ch := range chPool {
