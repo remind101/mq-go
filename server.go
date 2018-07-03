@@ -139,6 +139,18 @@ func WithClient(c sqsiface.SQSAPI) func(s *Server) {
 	}
 }
 
+// WithConcurrency configures a Server with c Concurrency.
+func WithConcurrency(c int) func(s *Server) {
+	return func(s *Server) {
+		s.Concurrency = c
+	}
+}
+
+// WithPartitionedProcessor configures a Server with a partitioned Processor.
+var WithPartitionedProcessor = func(s *Server) {
+	s.Processor = &PartitionedProcessor{s}
+}
+
 // NewServer creates a new Server.
 func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 	s := &Server{

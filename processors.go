@@ -5,6 +5,8 @@ import (
 	"hash/fnv"
 	"math/rand"
 	"sync"
+
+	"github.com/aws/aws-sdk-go/aws"
 )
 
 // Processor defines an interface for processing messages.
@@ -102,8 +104,14 @@ func (p *PartitionedProcessor) processMessages(messagesCh <-chan *Message, delet
 }
 func (p *PartitionedProcessor) partitionMessage(m *Message, shards int) int {
 	if key, ok := m.SQSMessage.MessageAttributes[MessageAttributeNamePartitionKey]; ok {
+		var bytes []byte
+		if aws.StringValue(key.DataType) == "Binary" {
+			bytes = key.BinaryValue
+		} else {
+			bytes = []byte(aws.StringValue(key.StringValue))
+		}
 		hash := fnv.New32a()
-		hash.Write(key.BinaryValue)
+		hash.Write(bytes)
 		return int(int64(hash.Sum32()) % int64(shards))
 	}
 
