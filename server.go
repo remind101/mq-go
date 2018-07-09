@@ -62,9 +62,10 @@ func (l *discardLogger) Println(v ...interface{}) {}
 //
 // 2. Processing messages
 // The Server starts one or more goroutines for processing messages from the
-// messages channel. The number of goroutines is configured by Concurrency.
-// These goroutines simply pass messages to the Handler. If the Handler returns
-// no error, the message will be sent to the deletions channel.
+// messages channel. Concurrency is controlled by Server.Processor and
+// Server.Concurrency. These goroutines simply pass messages to the Handler. If
+// the Handler returns no error, the message will be sent to the deletions
+// channel.
 //
 // 3. Deleting messages
 // The Server starts a single goroutine to batch delete processed messages.
@@ -106,7 +107,9 @@ type Server struct {
 	doneProcessing chan struct{}
 
 	deletionsCh chan *Message
-	done        chan struct{}
+	errorsCh    chan error
+
+	done chan struct{}
 }
 
 // ServerDefaults is used by NewServer to initialize a Server with defaults.
@@ -165,6 +168,7 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 
 	s.messagesCh = make(chan *Message)
 	s.deletionsCh = make(chan *Message, s.BatchDeleteMaxMessages)
+	s.errorsCh = make(chan error)
 	s.doneProcessing = make(chan struct{})
 	s.shutdown = make(chan struct{})
 	s.done = make(chan struct{})
@@ -177,6 +181,7 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 func (c *Server) Start() {
 	go c.startReceiver()
 	go c.startProcessor()
+	go c.startErrorHandler()
 	go c.startDeleter()
 }
 
@@ -207,7 +212,13 @@ func (c *Server) startReceiver() {
 }
 
 func (c *Server) startProcessor() {
-	c.Processor.Process(c.messagesCh, c.deletionsCh, c.doneProcessing)
+	c.Processor.Process(c.messagesCh, c.deletionsCh, c.errorsCh, c.doneProcessing)
+}
+
+func (c *Server) startErrorHandler() {
+	for err := range c.errorsCh {
+		c.ErrorHandler(err)
+	}
 }
 
 func (c *Server) startDeleter() {
@@ -253,6 +264,7 @@ func (c *Server) startDeleter() {
 		case <-c.doneProcessing:
 			c.Logger.Println("draining deletions channel")
 			close(c.deletionsCh)
+			close(c.errorsCh)
 			for m := range c.deletionsCh {
 				addToBatch(m.SQSMessage)
 			}

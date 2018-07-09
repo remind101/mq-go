@@ -15,8 +15,9 @@ type Processor interface {
 	// * Receive messages from the messagesCh in a loop until that channel is
 	//   closed.
 	// * Send messages to the deletionsCh if message was successfully processed.
+	// * Send errors to the errorsCh.
 	// * Close the done channel when finished processing.
-	Process(messagesCh <-chan *Message, deletionsCh chan<- *Message, done chan struct{})
+	Process(messagesCh <-chan *Message, deletionsCh chan<- *Message, errorsCh chan<- error, done chan struct{})
 }
 
 // BoundedProcessor is the default message processor. It creates
@@ -26,13 +27,13 @@ type BoundedProcessor struct {
 }
 
 // Process satisfies the Processor interface.
-func (p *BoundedProcessor) Process(messagesCh <-chan *Message, deletionsCh chan<- *Message, done chan struct{}) {
+func (p *BoundedProcessor) Process(messagesCh <-chan *Message, deletionsCh chan<- *Message, errorsCh chan<- error, done chan struct{}) {
 	var wg sync.WaitGroup
 	for i := 0; i < p.Server.Concurrency; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p.processMessages(messagesCh, deletionsCh)
+			p.processMessages(messagesCh, deletionsCh, errorsCh)
 		}()
 	}
 	wg.Wait()
@@ -40,10 +41,10 @@ func (p *BoundedProcessor) Process(messagesCh <-chan *Message, deletionsCh chan<
 	close(done)
 }
 
-func (p *BoundedProcessor) processMessages(messagesCh <-chan *Message, deletionsCh chan<- *Message) {
+func (p *BoundedProcessor) processMessages(messagesCh <-chan *Message, deletionsCh chan<- *Message, errorsCh chan<- error) {
 	for m := range messagesCh {
 		if err := p.Server.Handler.HandleMessage(m); err != nil {
-			p.Server.ErrorHandler(err)
+			errorsCh <- err
 		} else {
 			deletionsCh <- m
 		}
@@ -57,13 +58,13 @@ type UnBoundedProcessor struct {
 }
 
 // Process satisfies the Processor interface.
-func (p *UnBoundedProcessor) Process(messagesCh <-chan *Message, deletionsCh chan<- *Message, done chan struct{}) {
+func (p *UnBoundedProcessor) Process(messagesCh <-chan *Message, deletionsCh chan<- *Message, errorsCh chan<- error, done chan struct{}) {
 	var wg sync.WaitGroup
 	for msg := range messagesCh {
 		wg.Add(1)
 		go func(m *Message) {
 			defer wg.Done()
-			p.processMessage(m, deletionsCh)
+			p.processMessage(m, deletionsCh, errorsCh)
 		}(msg)
 	}
 	wg.Wait()
@@ -71,9 +72,9 @@ func (p *UnBoundedProcessor) Process(messagesCh <-chan *Message, deletionsCh cha
 	close(done)
 }
 
-func (p *UnBoundedProcessor) processMessage(m *Message, deletionsCh chan<- *Message) {
+func (p *UnBoundedProcessor) processMessage(m *Message, deletionsCh chan<- *Message, errorsCh chan<- error) {
 	if err := p.Server.Handler.HandleMessage(m); err != nil {
-		p.Server.ErrorHandler(err)
+		errorsCh <- err
 	} else {
 		deletionsCh <- m
 	}
@@ -92,7 +93,7 @@ type PartitionedProcessor struct {
 }
 
 // Process satisfies the Processor interface.
-func (p *PartitionedProcessor) Process(messagesCh <-chan *Message, deletionsCh chan<- *Message, done chan struct{}) {
+func (p *PartitionedProcessor) Process(messagesCh <-chan *Message, deletionsCh chan<- *Message, errorsCh chan<- error, done chan struct{}) {
 	chPool := make([]chan *Message, p.Server.Concurrency)
 	var wg sync.WaitGroup
 	for i := 0; i < p.Server.Concurrency; i++ {
@@ -100,7 +101,7 @@ func (p *PartitionedProcessor) Process(messagesCh <-chan *Message, deletionsCh c
 		wg.Add(1)
 		go func(ch <-chan *Message) {
 			defer wg.Done()
-			p.processMessages(ch, deletionsCh)
+			p.processMessages(ch, deletionsCh, errorsCh)
 		}(chPool[i])
 	}
 
@@ -122,10 +123,10 @@ func (p *PartitionedProcessor) Process(messagesCh <-chan *Message, deletionsCh c
 
 // processMessages processes messages by passing them to the Handler. If no
 // error is returned the message is queued for deletion.
-func (p *PartitionedProcessor) processMessages(messagesCh <-chan *Message, deletionsCh chan<- *Message) {
+func (p *PartitionedProcessor) processMessages(messagesCh <-chan *Message, deletionsCh chan<- *Message, errorsCh chan<- error) {
 	for m := range messagesCh {
 		if err := p.Server.Handler.HandleMessage(m); err != nil {
-			p.Server.ErrorHandler(err)
+			errorsCh <- err
 		} else {
 			deletionsCh <- m
 		}
