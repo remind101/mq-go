@@ -133,8 +133,8 @@ func TestServerDeletesWhenIntervalIsReached(t *testing.T) {
 	}, "expected messages to be batch removed after the DeletionInterval")
 }
 
-func newServer(t *testing.T, qURL string, h mq.Handler, c sqsiface.SQSAPI) *mq.Server {
-	return mq.NewServer(qURL, h, func(s *mq.Server) {
+func newServer(t *testing.T, qURL string, h mq.Handler, c sqsiface.SQSAPI, opts ...func(*mq.Server)) *mq.Server {
+	testDefaults := func(s *mq.Server) {
 		s.Client = c
 		s.ErrorHandler = func(err error) {
 			t.Fatal(err)
@@ -142,7 +142,9 @@ func newServer(t *testing.T, qURL string, h mq.Handler, c sqsiface.SQSAPI) *mq.S
 		if os.Getenv("DEBUG") == "true" {
 			s.Logger = log.New(os.Stderr, "server - ", 0)
 		}
-	})
+	}
+	opts = append([]func(*mq.Server){testDefaults}, opts...)
+	return mq.NewServer(qURL, h, opts...)
 }
 
 func closeServer(t *testing.T, s *mq.Server) {

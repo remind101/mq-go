@@ -6,7 +6,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -63,9 +62,10 @@ func (l *discardLogger) Println(v ...interface{}) {}
 //
 // 2. Processing messages
 // The Server starts one or more goroutines for processing messages from the
-// messages channel. The number of goroutines is configured by Concurrency.
-// These goroutines simply pass messages to the Handler. If the Handler returns
-// no error, the message will be sent to the deletions channel.
+// messages channel. Concurrency is controlled by Server.Processor and
+// Server.Concurrency. These goroutines simply pass messages to the Handler. If
+// the Handler returns no error, the message will be sent to the deletions
+// channel.
 //
 // 3. Deleting messages
 // The Server starts a single goroutine to batch delete processed messages.
@@ -98,7 +98,8 @@ type Server struct {
 	BatchDeleteMaxMessages int
 	DeletionInterval       time.Duration
 
-	Logger Logger
+	Logger    Logger
+	Processor Processor
 
 	shutdown chan struct{}
 
@@ -106,7 +107,9 @@ type Server struct {
 	doneProcessing chan struct{}
 
 	deletionsCh chan *Message
-	done        chan struct{}
+	errorsCh    chan error
+
+	done chan struct{}
 }
 
 // ServerDefaults is used by NewServer to initialize a Server with defaults.
@@ -129,6 +132,7 @@ func ServerDefaults(s *Server) {
 	s.BatchDeleteMaxMessages = DefaultBatchDeleteMaxMessages
 	s.DeletionInterval = DefaultDeletionInterval
 	s.Logger = &discardLogger{}
+	s.Processor = &BoundedProcessor{s}
 }
 
 // WithClient configures a Server with a custom sqs Client.
@@ -136,6 +140,18 @@ func WithClient(c sqsiface.SQSAPI) func(s *Server) {
 	return func(s *Server) {
 		s.Client = c
 	}
+}
+
+// WithConcurrency configures a Server with c Concurrency.
+func WithConcurrency(c int) func(s *Server) {
+	return func(s *Server) {
+		s.Concurrency = c
+	}
+}
+
+// WithPartitionedProcessor configures a Server with a partitioned Processor.
+var WithPartitionedProcessor = func(s *Server) {
+	s.Processor = &PartitionedProcessor{s}
 }
 
 // NewServer creates a new Server.
@@ -152,6 +168,7 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 
 	s.messagesCh = make(chan *Message)
 	s.deletionsCh = make(chan *Message, s.BatchDeleteMaxMessages)
+	s.errorsCh = make(chan error)
 	s.doneProcessing = make(chan struct{})
 	s.shutdown = make(chan struct{})
 	s.done = make(chan struct{})
@@ -163,7 +180,8 @@ func NewServer(queueURL string, h Handler, opts ...func(*Server)) *Server {
 // number of Handler routines for message processing.
 func (c *Server) Start() {
 	go c.startReceiver()
-	go c.startProcessors()
+	go c.startProcessor()
+	go c.startErrorHandler()
 	go c.startDeleter()
 }
 
@@ -193,18 +211,14 @@ func (c *Server) startReceiver() {
 	}
 }
 
-func (c *Server) startProcessors() {
-	var wg sync.WaitGroup
-	for i := 0; i < c.Concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			c.processMessages()
-		}()
+func (c *Server) startProcessor() {
+	c.Processor.Process(c.messagesCh, c.deletionsCh, c.errorsCh, c.doneProcessing)
+}
+
+func (c *Server) startErrorHandler() {
+	for err := range c.errorsCh {
+		c.ErrorHandler(err)
 	}
-	wg.Wait()
-	c.Logger.Println("finished processing messages")
-	close(c.doneProcessing)
 }
 
 func (c *Server) startDeleter() {
@@ -250,6 +264,7 @@ func (c *Server) startDeleter() {
 		case <-c.doneProcessing:
 			c.Logger.Println("draining deletions channel")
 			close(c.deletionsCh)
+			close(c.errorsCh)
 			for m := range c.deletionsCh {
 				addToBatch(m.SQSMessage)
 			}
@@ -289,22 +304,6 @@ func (c *Server) receiveMessage() (*sqs.ReceiveMessageOutput, error) {
 		WaitTimeSeconds:       c.WaitTimeSeconds,
 		VisibilityTimeout:     c.VisibilityTimeout,
 	})
-}
-
-// processMessages processes messages by passing them to the Handler. If no
-// error is returned the message is queued for deletion.
-func (c *Server) processMessages() {
-	for m := range c.messagesCh {
-		if err := c.Handler.HandleMessage(m); err != nil {
-			c.ErrorHandler(err)
-		} else {
-			c.deleteMessage(m)
-		}
-	}
-}
-
-func (c *Server) deleteMessage(m *Message) {
-	c.deletionsCh <- m
 }
 
 func (c *Server) deleteMessageBatch(input *sqs.DeleteMessageBatchInput) {
